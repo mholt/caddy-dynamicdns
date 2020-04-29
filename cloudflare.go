@@ -1,8 +1,8 @@
 package dynamicdns
 
 import (
-	"github.com/StackExchange/dnscontrol/v2/providers"
-	"github.com/StackExchange/dnscontrol/v2/providers/cloudflare"
+	"github.com/StackExchange/dnscontrol/v3/providers"
+	"github.com/StackExchange/dnscontrol/v3/providers/cloudflare"
 	"github.com/caddyserver/caddy/v2"
 )
 

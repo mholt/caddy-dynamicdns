@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/StackExchange/dnscontrol/v2/models"
-	"github.com/StackExchange/dnscontrol/v2/providers"
+	"github.com/StackExchange/dnscontrol/v3/models"
+	"github.com/StackExchange/dnscontrol/v3/providers"
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
 	"golang.org/x/net/publicsuffix"
