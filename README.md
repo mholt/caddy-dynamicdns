@@ -7,7 +7,7 @@ This is a simple Caddy app that keeps your DNS pointed to your machine; especial
 
 It simply queries a service (an "IP source") for your public IP address every so often and if it changes, it updates the DNS records with your configured provider.
 
-The IP source is modular, as are the DNS providers.
+The IP source and DNS providers are modular. In addition to this app module, you'll need to plug in [a DNS provider module from caddy-dns](https://github.com/caddy-dns).
 
 Example Caddy config:
 
@@ -17,9 +17,8 @@ Example Caddy config:
 		"dynamic_dns": {
 			"domain": "example.com",
 			"dns_provider": {
-				"provider": "cloudflare",
-				"api_user": "you@yours.com",
-				"api_key": "topsecret"
+				"name": "cloudflare",
+				"api_token": "topsecret",
 			}
 		}
 	}

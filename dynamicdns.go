@@ -4,13 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/StackExchange/dnscontrol/v3/models"
-	"github.com/StackExchange/dnscontrol/v3/providers"
 	"github.com/caddyserver/caddy/v2"
+	"github.com/libdns/libdns"
 	"go.uber.org/zap"
 	"golang.org/x/net/publicsuffix"
 )
@@ -26,7 +24,7 @@ type App struct {
 
 	// The configuration for the DNS provider with which the DNS
 	// records will be updated.
-	DNSProviderRaw json.RawMessage `json:"dns_provider,omitempty" caddy:"namespace=dynamic_dns.providers inline_key=provider"`
+	DNSProviderRaw json.RawMessage `json:"dns_provider,omitempty" caddy:"namespace=dns.providers inline_key=name"`
 
 	// The domain name for which to update DNS records.
 	Domain string `json:"domain,omitempty"`
@@ -34,10 +32,9 @@ type App struct {
 	// How frequently to check the public IP address. Default: 10m
 	CheckInterval caddy.Duration `json:"check_interval,omitempty"`
 
-	ipSource      IPSource
-	dnsProvider   providers.DNSServiceProvider
-	eTLDplus1     string
-	remainingZone string
+	ipSource    IPSource
+	dnsProvider libdns.RecordSetter
+	eTLDplus1   string // TODO: a better way to get the zone from the domain - recursive DNS lookups until SOA record, like lego does maybe?
 
 	ctx    caddy.Context
 	logger *zap.Logger
@@ -65,7 +62,6 @@ func (a *App) Provision(ctx caddy.Context) error {
 		return err
 	}
 	a.eTLDplus1 = eTLDplus1
-	a.remainingZone = strings.Trim(strings.TrimSuffix(a.Domain, eTLDplus1), ".")
 
 	// set up the DNS provider module
 	if len(a.DNSProviderRaw) == 0 {
@@ -75,7 +71,7 @@ func (a *App) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return fmt.Errorf("loading DNS provider module: %v", err)
 	}
-	a.dnsProvider = val.(providers.DNSServiceProvider)
+	a.dnsProvider = val.(libdns.RecordSetter)
 
 	// set up the IP source module or use a default
 	if a.IPSourceRaw != nil {
@@ -136,6 +132,23 @@ func (a App) checkIPAndUpdateDNS() {
 	lastIPMu.Lock()
 	defer lastIPMu.Unlock()
 
+	// if we don't know the current IP for this domain, try to get it
+	if lastIP == nil {
+		if recordGetter, ok := a.dnsProvider.(libdns.RecordGetter); ok {
+			recs, err := recordGetter.GetRecords(a.ctx, a.eTLDplus1)
+			if err == nil {
+				for _, r := range recs {
+					if r.Type == "A" && r.Name == a.Domain {
+						lastIP = net.ParseIP(r.Value)
+						break
+					}
+				}
+			} else {
+				a.logger.Error("unable to get current records", zap.Error(err))
+			}
+		}
+	}
+
 	ip, err := a.ipSource.GetIPv4()
 	if err != nil {
 		a.logger.Error("checking IP address", zap.Error(err))
@@ -159,33 +172,23 @@ func (a App) checkIPAndUpdateDNS() {
 }
 
 func (a App) updateDNS(ipv4 net.IP) error {
-	// configure the DNS 'A' record
-	recordA := &models.RecordConfig{
-		Type: "A",
-		TTL:  uint32(time.Duration(a.CheckInterval) / time.Second),
-	}
-	recordA.SetLabel(a.remainingZone, a.eTLDplus1)
-	recordA.SetTargetIP(ipv4)
-
-	// configure the domain/zone
-	domain := &models.DomainConfig{
-		Name:        a.eTLDplus1,
-		Records:     models.Records{recordA},
-		KeepUnknown: true, // very important to not delete other records!!
+	recordA := libdns.Record{
+		Type:  "A",
+		Name:  a.Domain,
+		Value: ipv4.String(),
+		TTL:   time.Duration(a.CheckInterval),
 	}
 
-	// figure out which corrections need to be made
-	corrections, err := a.dnsProvider.GetDomainCorrections(domain)
+	a.logger.Info("updating DNS record",
+		zap.String("type", recordA.Type),
+		zap.String("name", recordA.Name),
+		zap.String("value", recordA.Value),
+		zap.Duration("ttl", recordA.TTL),
+	)
+
+	_, err := a.dnsProvider.SetRecords(a.ctx, a.eTLDplus1, []libdns.Record{recordA})
 	if err != nil {
 		return err
-	}
-
-	// make each correction to the DNS records
-	for _, corr := range corrections {
-		a.logger.Info("updating DNS", zap.String("change", corr.Msg))
-		if err := corr.F(); err != nil {
-			return err
-		}
 	}
 
 	a.logger.Info("finished updating DNS")
