@@ -24,3 +24,14 @@ Example Caddy config:
 	}
 }
 ```
+
+Example Caddyfile config, via [global options](https://caddyserver.com/docs/caddyfile/options):
+```
+{
+	dynamic_dns {
+		domain example.com
+		provider cloudflare {env.CLOUDFLARE_API_TOKEN}
+		check_interval 5m
+	}
+}
+```
