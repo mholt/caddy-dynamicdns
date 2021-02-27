@@ -15,10 +15,14 @@ func init() {
 // Syntax:
 //
 //     dynamic_dns {
-//         domain <domain>
+//         domains {
+//             <zone> <names...>
+//         }
 //         check_interval <duration>
 //         provider <name> ...
 //     }
+//
+// If <names...> are omitted after <zone>, then "@" will be assumed.
 func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 	app := new(App)
 
@@ -30,9 +34,17 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 	// handle the block
 	for d.NextBlock(0) {
 		switch d.Val() {
-		case "domain":
-			if !d.Args(&app.Domain) {
-				return nil, d.ArgErr()
+		case "domains":
+			for d.NextBlock(0) {
+				zone := d.Val()
+				if zone == "" {
+					return nil, d.ArgErr()
+				}
+				names := d.RemainingArgs()
+				if len(names) == 0 {
+					names = []string{"@"}
+				}
+				app.Domains[zone] = names
 			}
 
 		case "check_interval":
@@ -56,9 +68,6 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 				return nil, err
 			}
 			app.DNSProviderRaw = caddyconfig.JSONModuleObject(unm, "name", provName, nil)
-
-		// TODO: Implement this once there's actually more than one source
-		// case "ip_source":
 
 		default:
 			return nil, d.ArgErr()
