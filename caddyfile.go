@@ -44,6 +44,9 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 				if len(names) == 0 {
 					names = []string{"@"}
 				}
+				if app.Domains == nil {
+					app.Domains = make(map[string][]string)
+				}
 				app.Domains[zone] = names
 			}
 
