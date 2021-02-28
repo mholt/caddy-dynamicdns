@@ -35,7 +35,7 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 	for d.NextBlock(0) {
 		switch d.Val() {
 		case "domains":
-			for d.NextBlock(0) {
+			for nesting := d.Nesting(); d.NextBlock(nesting); {
 				zone := d.Val()
 				if zone == "" {
 					return nil, d.ArgErr()
@@ -43,6 +43,9 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 				names := d.RemainingArgs()
 				if len(names) == 0 {
 					names = []string{"@"}
+				}
+				if app.Domains == nil {
+					app.Domains = make(map[string][]string)
 				}
 				app.Domains[zone] = names
 			}
