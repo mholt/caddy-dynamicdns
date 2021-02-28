@@ -35,7 +35,7 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 	for d.NextBlock(0) {
 		switch d.Val() {
 		case "domains":
-			for d.NextBlock(1) {
+			for nesting := d.Nesting(); d.NextBlock(nesting); {
 				zone := d.Val()
 				if zone == "" {
 					return nil, d.ArgErr()
