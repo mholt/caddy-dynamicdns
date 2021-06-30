@@ -74,7 +74,7 @@ Here's a more filled-out JSON config:
 
 This config prefers to get the IP address locally via UPnP (if edge router has UPnP enabled, of course), but if that fails, will fall back to querying `icanhazip.com` for the IP address. It then updates records for `example.com`, `www.example.com`, and `subdomain.example.net`. Notice how the zones and subdomains are separate; this eliminates ambiguity since we don't have to try to be clever and figure out the zone via recursive, authoritative DNS lookups. We also check every 5 minutes instead of 30 minutes (default).
 
-Equivalent Caddyfile (there is not currently a way to customize IP sources via Caddyfile; PRs welcomed!):
+Equivalent Caddyfile:
 
 ```
 {
@@ -85,6 +85,8 @@ Equivalent Caddyfile (there is not currently a way to customize IP sources via C
 			example.net subdomain
 		}
 		check_interval 5m
+		ip_source upnp
+		ip_source endpoint https://icanhazip.com
 	}
 }
 ```
