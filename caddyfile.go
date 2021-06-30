@@ -20,8 +20,7 @@ func init() {
 //         }
 //         check_interval <duration>
 //         provider <name> ...
-//         ip_source upnp
-//         ip_source endpoint https://icanhazip.com
+//         ip_source upnp|endpoint <endpoint>
 //     }
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
