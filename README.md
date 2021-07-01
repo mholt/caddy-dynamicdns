@@ -54,7 +54,7 @@ Here's a more filled-out JSON config:
 				},
 				{
 					"source": "simple_http",
-					"endpoints": ["https://icanhazip.com"]
+					"endpoints": ["https://icanhazip.com", "https://api.ipify.org"]
 				}
 			],
 			"domains": {
