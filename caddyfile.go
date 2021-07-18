@@ -83,7 +83,7 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 			if err != nil {
 				return nil, err
 			}
-			app.IPSourcesRaw = append(app.IPSourcesRaw, caddyconfig.JSON(unm, nil))
+			app.IPSourcesRaw = append(app.IPSourcesRaw, caddyconfig.JSONModuleObject(unm, "source", sourceType, nil))
 
 		default:
 			return nil, d.ArgErr()

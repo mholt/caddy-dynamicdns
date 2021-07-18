@@ -47,9 +47,6 @@ type SimpleHTTP struct {
 	// - https://ipecho.net/plain
 	Endpoints []string `json:"endpoints,omitempty"`
 
-	// Source of this ip_source, only valid value is "simple_http"
-	Source string `json:"source,omitempty"`
-
 	logger *zap.Logger
 }
 
@@ -69,7 +66,6 @@ func (sh *SimpleHTTP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	if !d.AllArgs(&unused, &endpoint) {
 		return d.ArgErr()
 	}
-	sh.Source = "simple_http"
 	sh.Endpoints = append(sh.Endpoints, endpoint)
 	return nil
 }
@@ -174,10 +170,7 @@ var defaultHTTPIPServices = []string{
 }
 
 // UPnP gets the IP address from UPnP device.
-type UPnP struct {
-	// Source of this ip_source, only valid value is "upnp"
-	Source string `json:"source,omitempty"`
-}
+type UPnP struct{}
 
 // CaddyModule returns the Caddy module information.
 func (UPnP) CaddyModule() caddy.ModuleInfo {
@@ -188,7 +181,6 @@ func (UPnP) CaddyModule() caddy.ModuleInfo {
 }
 
 func (u *UPnP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	u.Source = "upnp"
 	return nil
 }
 
