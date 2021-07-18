@@ -34,15 +34,20 @@ func Test_ParseApp(t *testing.T) {
 			name: "ip_source: simple http endpoints",
 			d: caddyfile.NewTestDispenser(`
 			dynamic_dns {
-				ip_source endpoint http://1.com
-				ip_source endpoint http://2.com
+				ip_source simple_http endpoint http://1.com
+				ip_source simple_http endpoint http://2.com
 			}`),
 			want: ` {
 				"ip_sources": [
 					{
 						"source": "simple_http",
-						"endpoints": ["http://1.com", "http://2.com"]
+						"endpoints": ["http://1.com"]
+					},
+                    {
+						"source": "simple_http",
+						"endpoints": ["http://2.com"]
 					}
+
 				]
 			}`,
 		},
@@ -50,9 +55,9 @@ func Test_ParseApp(t *testing.T) {
 			name: "ip_source: endpoints then upnp then endpoints",
 			d: caddyfile.NewTestDispenser(`
 			dynamic_dns {
-				ip_source endpoint http://1.com
+				ip_source simple_http endpoint http://1.com
 				ip_source upnp
-				ip_source endpoint http://2.com
+				ip_source simple_http endpoint http://2.com
 			}`),
 			want: ` {
 				"ip_sources": [
