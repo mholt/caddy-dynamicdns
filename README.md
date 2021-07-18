@@ -86,8 +86,8 @@ Equivalent Caddyfile:
 		}
 		check_interval 5m
 		ip_source upnp
-		ip_source simple_http endpoint https://icanhazip.com
-		ip_source simple_http endpoint https://api.ipify.org
+		ip_source simple_http https://icanhazip.com
+		ip_source simple_http https://api.ipify.org
 	}
 }
 ```

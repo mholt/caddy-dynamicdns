@@ -64,14 +64,10 @@ func (SimpleHTTP) CaddyModule() caddy.ModuleInfo {
 func (sh *SimpleHTTP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	var (
 		unused   string
-		arg      string
 		endpoint string
 	)
-	if !d.AllArgs(&unused, &arg, &endpoint) {
+	if !d.AllArgs(&unused, &endpoint) {
 		return d.ArgErr()
-	}
-	if arg != "endpoint" {
-		return fmt.Errorf("wrong arg receieved: %v, only support \"endpoint\"", arg)
 	}
 	sh.Source = "simple_http"
 	sh.Endpoints = append(sh.Endpoints, endpoint)

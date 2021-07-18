@@ -20,7 +20,7 @@ func init() {
 //         }
 //         check_interval <duration>
 //         provider <name> ...
-//         ip_source upnp|simple_http endpoint <endpoint>
+//         ip_source upnp|simple_http <endpoint>
 //     }
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
@@ -30,18 +30,6 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 	// consume the option name
 	if !d.Next() {
 		return nil, d.ArgErr()
-	}
-
-	// Collects all seen endpoints, to be made into one simple http ip source at the end.
-	var endpoints []string
-	flushSimpleHTTPEndpoints := func() {
-		if len(endpoints) > 0 {
-			app.IPSourcesRaw = append(app.IPSourcesRaw, caddyconfig.JSON(map[string]interface{}{
-				"source":    "simple_http",
-				"endpoints": endpoints,
-			}, nil))
-		}
-		endpoints = nil
 	}
 
 	// handle the block
@@ -101,8 +89,6 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 			return nil, d.ArgErr()
 		}
 	}
-
-	flushSimpleHTTPEndpoints()
 
 	return httpcaddyfile.App{
 		Name:  "dynamic_dns",
