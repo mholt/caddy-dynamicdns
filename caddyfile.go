@@ -20,6 +20,7 @@ func init() {
 //         }
 //         check_interval <duration>
 //         provider <name> ...
+//         ip_source upnp|simple_http <endpoint>
 //     }
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
@@ -71,6 +72,18 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 				return nil, err
 			}
 			app.DNSProviderRaw = caddyconfig.JSONModuleObject(unm, "name", provName, nil)
+
+		case "ip_source":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			sourceType := d.Val()
+			modID := "dynamic_dns.ip_sources." + sourceType
+			unm, err := caddyfile.UnmarshalModule(d, modID)
+			if err != nil {
+				return nil, err
+			}
+			app.IPSourcesRaw = append(app.IPSourcesRaw, caddyconfig.JSONModuleObject(unm, "source", sourceType, nil))
 
 		default:
 			return nil, d.ArgErr()

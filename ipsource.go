@@ -12,6 +12,7 @@ import (
 
 	upnp "github.com/NebulousLabs/go-upnp"
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"go.uber.org/zap"
 )
 
@@ -55,6 +56,18 @@ func (SimpleHTTP) CaddyModule() caddy.ModuleInfo {
 		ID:  "dynamic_dns.ip_sources.simple_http",
 		New: func() caddy.Module { return new(SimpleHTTP) },
 	}
+}
+
+func (sh *SimpleHTTP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	var (
+		unused   string
+		endpoint string
+	)
+	if !d.AllArgs(&unused, &endpoint) {
+		return d.ArgErr()
+	}
+	sh.Endpoints = append(sh.Endpoints, endpoint)
+	return nil
 }
 
 // Provision sets up the module.
@@ -167,6 +180,10 @@ func (UPnP) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
+func (u *UPnP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	return nil
+}
+
 // GetIPs gets the public address(es) of this machine.
 func (UPnP) GetIPs(ctx context.Context) ([]net.IP, error) {
 	d, err := upnp.DiscoverCtx(ctx)
@@ -189,7 +206,10 @@ func (UPnP) GetIPs(ctx context.Context) ([]net.IP, error) {
 
 // Interface guards
 var (
-	_ IPSource          = (*SimpleHTTP)(nil)
-	_ caddy.Provisioner = (*SimpleHTTP)(nil)
-	_ IPSource          = (*UPnP)(nil)
+	_ IPSource              = (*SimpleHTTP)(nil)
+	_ caddy.Provisioner     = (*SimpleHTTP)(nil)
+	_ caddyfile.Unmarshaler = (*SimpleHTTP)(nil)
+	_ caddyfile.Unmarshaler = (*UPnP)(nil)
+
+	_ IPSource = (*UPnP)(nil)
 )
