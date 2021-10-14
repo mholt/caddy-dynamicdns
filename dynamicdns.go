@@ -307,15 +307,20 @@ func (a App) allDomains() map[string][]string {
 	for zone, domains := range a.Domains {
 		d[zone] = domains
 		for _, h := range m {
-			if !strings.HasSuffix(h, zone) {
-				// Not in this zone
-			}
-			name := func() string {
+			name, ok := func() (string, bool) {
 				if h == zone {
-					return "@"
+					return "@", true
 				}
-				return strings.TrimSuffix(h, "."+zone)
-			}()
+				suffix := "."+zone
+				if n := strings.TrimSuffix(h, suffix); n != h {
+					return n, true
+				}
+				return "", false
+			}
+			if !ok {
+				// Not in this zone.
+				continue
+			}
 			a.logger.Info("Adding dynamic domain", zap.String("domain", name))
 			d[zone] = append(d[zone], name)
 		}
