@@ -91,3 +91,30 @@ Equivalent Caddyfile:
 	}
 }
 ```
+
+There is an option `dynamic_domains` that can scan through the configured domains configured in this Caddy instance and will try to manage the DNS of those domains.
+
+Example Caddyfile:
+
+```
+{
+	dynamic_dns {
+		provider cloudflare {env.CLOUDFLARE_API_TOKEN}
+		domains {
+			example.com @ www
+			example.net subdomain
+		}
+		dynamic_domains
+	}
+}
+
+# This domain will be managed.
+cool.example.com {
+	redir http://google.com
+}
+
+# This domain will *NOT* be managed because it's not configured in dynamic_dns.
+another.host.com {
+	redir http://youtube.com
+}
+```
