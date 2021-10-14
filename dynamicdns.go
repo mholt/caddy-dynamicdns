@@ -311,7 +311,7 @@ func (a App) allDomains() map[string][]string {
 				if h == zone {
 					return "@", true
 				}
-				suffix := "." + zone
+				suffix := "."+zone
 				if n := strings.TrimSuffix(h, suffix); n != h {
 					return n, true
 				}

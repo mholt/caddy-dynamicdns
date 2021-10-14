@@ -92,9 +92,52 @@ Equivalent Caddyfile:
 }
 ```
 
-There is an option `dynamic_domains` that can scan through the configured domains configured in this Caddy instance and will try to manage the DNS of those domains.
+There is an option `dynamic_domains` that can scan through the configured domains configured in this Caddy instance and will try to manage the DNS of those domains. 
 
-Example Caddyfile:
+Note:
+* Only host matchers at the top-level of server routes will get managed.
+* [on_demand](https://caddyserver.com/docs/automatic-https#on-demand-tls) is not supported because the hostname isn't known at config time.
+
+Example JSON config:
+```json
+{
+	"apps": {
+		"dynamic_dns": {
+			"domains": {
+				"example.com": ["@", "www"],
+				"example.net": ["subdomain"]
+			},
+			"dns_provider": {
+				"name": "cloudflare",
+				"api_token": "topsecret"
+			},
+		},
+		"servers": {
+			"srv0": {
+				"routes": [{
+					// omitted
+					"match": [{
+						"host": [
+							// This domain will be managed.
+							"cool.example.com"
+						]
+					}]
+				}, {
+					// omitted
+					"match": [{
+						"host": [
+							// This domain will *NOT* be managed because it's not configured in dynamic_dns.
+							"another.host.com"
+						]
+					}]
+				}]
+			}
+		}
+	}
+}
+```
+
+Equivalent Caddyfile:
 
 ```
 {
