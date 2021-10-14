@@ -65,7 +65,8 @@ Here's a more filled-out JSON config:
 				"name": "cloudflare",
 				"api_token": "topsecret"
 			},
-			"check_interval": "5m"
+			"check_interval": "5m",
+			"dynamic_domains": false
 		}
 	}
 }
@@ -107,6 +108,7 @@ Example JSON config:
 				"example.com": ["@", "www"],
 				"example.net": ["subdomain"]
 			},
+			"dynamic_domains": true,
 			"dns_provider": {
 				"name": "cloudflare",
 				"api_token": "topsecret"
