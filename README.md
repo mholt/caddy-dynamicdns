@@ -99,7 +99,7 @@ Note:
 * [on_demand](https://caddyserver.com/docs/automatic-https#on-demand-tls) is not supported because the hostname isn't known at config time.
 
 Example JSON config:
-```json
+```jsonc
 {
 	"apps": {
 		"dynamic_dns": {
