@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	upnp "github.com/NebulousLabs/go-upnp"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	upnp "gitlab.com/NebulousLabs/go-upnp"
 	"go.uber.org/zap"
 )
 
@@ -23,7 +23,7 @@ func init() {
 
 // IPSource is a type that can get IP addresses.
 type IPSource interface {
-	GetIPs(context.Context) ([]net.IP, error)
+	GetIPs(context.Context, []IPVersion) ([]net.IP, error)
 }
 
 // SimpleHTTP is an IP source that looks up the public IP addresses by
@@ -80,28 +80,32 @@ func (sh *SimpleHTTP) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public addresses of this machine.
-func (sh SimpleHTTP) GetIPs(ctx context.Context) ([]net.IP, error) {
+func (sh SimpleHTTP) GetIPs(ctx context.Context, versions []IPVersion) ([]net.IP, error) {
 	ipv4Client := sh.makeClient("tcp4")
 	ipv6Client := sh.makeClient("tcp6")
 
 	var ips []net.IP
 	for _, endpoint := range sh.Endpoints {
-		ipv4, err := sh.lookupIP(ctx, ipv4Client, endpoint)
-		if err != nil {
-			sh.logger.Warn("IPv4 lookup failed",
-				zap.String("endpoint", endpoint),
-				zap.Error(err))
-		} else if !ipListContains(ips, ipv4) {
-			ips = append(ips, ipv4)
+		if IPVersionsContains(versions, IPv4) {
+			ipv4, err := sh.lookupIP(ctx, ipv4Client, endpoint)
+			if err != nil {
+				sh.logger.Warn("IPv4 lookup failed",
+					zap.String("endpoint", endpoint),
+					zap.Error(err))
+			} else if !ipListContains(ips, ipv4) {
+				ips = append(ips, ipv4)
+			}
 		}
 
-		ipv6, err := sh.lookupIP(ctx, ipv6Client, endpoint)
-		if err != nil {
-			sh.logger.Warn("IPv6 lookup failed",
-				zap.String("endpoint", endpoint),
-				zap.Error(err))
-		} else if !ipListContains(ips, ipv6) {
-			ips = append(ips, ipv6)
+		if IPVersionsContains(versions, IPv6) {
+			ipv6, err := sh.lookupIP(ctx, ipv6Client, endpoint)
+			if err != nil {
+				sh.logger.Warn("IPv6 lookup failed",
+					zap.String("endpoint", endpoint),
+					zap.Error(err))
+			} else if !ipListContains(ips, ipv6) {
+				ips = append(ips, ipv6)
+			}
 		}
 
 		// use first successful service
@@ -185,7 +189,10 @@ func (u *UPnP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 }
 
 // GetIPs gets the public address(es) of this machine.
-func (UPnP) GetIPs(ctx context.Context) ([]net.IP, error) {
+// This implementation ignores the configured IP versions, since
+// we can't really choose whether we're looking for IPv4 or IPv6
+// with UPnP, we just get what we get.
+func (UPnP) GetIPs(ctx context.Context, _ []IPVersion) ([]net.IP, error) {
 	d, err := upnp.DiscoverCtx(ctx)
 	if err != nil {
 		return nil, err

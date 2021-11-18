@@ -2,6 +2,7 @@ package dynamicdns
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -39,6 +40,10 @@ type App struct {
 	// Caddy instance, configure like so: `"example.com": ["@", "www"]`
 	Domains        map[string][]string `json:"domains,omitempty"`
 	DynamicDomains bool                `json:"dynamic_domains,omitempty"`
+
+	// The IP versions to enable. By default, both "ipv4" and "ipv6" will be enabled.
+	// To disable IPv6, specify ["ipv4"].
+	Versions []IPVersion `json:"versions,omitempty"`
 
 	// How frequently to check the public IP address. Default: 30m
 	CheckInterval caddy.Duration `json:"check_interval,omitempty"`
@@ -99,6 +104,17 @@ func (a *App) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("check interval must be at least 1 second")
 	}
 
+	// make sure the IP versions are set and valid
+	if a.Versions == nil {
+		a.Versions = []IPVersion{IPv4, IPv6}
+	}
+	for _, version := range a.Versions {
+		err := version.IsValid()
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -155,7 +171,7 @@ func (a App) checkIPAndUpdateDNS() {
 	// look up current address(es) from first successful IP source
 	var currentIPs []net.IP
 	for _, ipSrc := range a.ipSources {
-		currentIPs, err = ipSrc.GetIPs(a.ctx)
+		currentIPs, err = ipSrc.GetIPs(a.ctx, a.Versions)
 		if len(currentIPs) == 0 {
 			err = fmt.Errorf("no IP addresses returned")
 		}
@@ -352,6 +368,39 @@ func removeDuplicateIPs(ips []net.IP) []net.IP {
 func ipListContains(list []net.IP, ip net.IP) bool {
 	for _, ipInList := range list {
 		if ipInList.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringListContains(list []string, s string) bool {
+	for _, val := range list {
+		if val == s {
+			return true
+		}
+	}
+	return false
+}
+
+type IPVersion string
+
+const (
+	IPv4 IPVersion = "ipv4"
+	IPv6 IPVersion = "ipv6"
+)
+
+func (ip IPVersion) IsValid() error {
+	switch ip {
+	case IPv4, IPv6:
+		return nil
+	}
+	return errors.New("Invalid IP version")
+}
+
+func IPVersionsContains(versions []IPVersion, version IPVersion) bool {
+	for _, val := range versions {
+		if val == version {
 			return true
 		}
 	}
