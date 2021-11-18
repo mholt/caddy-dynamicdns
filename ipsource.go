@@ -38,7 +38,7 @@ type SimpleHTTP struct {
 	// The list of endpoints to query. If empty, a default list will
 	// be used:
 	//
-	// - https://api.ipify.org
+	// - https://api64.ipify.org
 	// - https://myip.addr.space
 	// - https://ifconfig.me
 	// - https://icanhazip.com
@@ -160,7 +160,7 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 }
 
 var defaultHTTPIPServices = []string{
-	"https://api.ipify.org",
+	"https://api64.ipify.org",
 	"https://myip.addr.space",
 	"https://ifconfig.me",
 	"https://icanhazip.com",
