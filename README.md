@@ -54,7 +54,7 @@ Here's a more filled-out JSON config:
 				},
 				{
 					"source": "simple_http",
-					"endpoints": ["https://icanhazip.com", "https://api.ipify.org"]
+					"endpoints": ["https://icanhazip.com", "https://api64.ipify.org"]
 				}
 			],
 			"domains": {
@@ -87,7 +87,7 @@ Equivalent Caddyfile:
 		check_interval 5m
 		ip_source upnp
 		ip_source simple_http https://icanhazip.com
-		ip_source simple_http https://api.ipify.org
+		ip_source simple_http https://api64.ipify.org
 	}
 }
 ```
