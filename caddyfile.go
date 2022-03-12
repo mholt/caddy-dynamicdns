@@ -51,6 +51,9 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 				app.Domains[zone] = names
 			}
 
+		case "dynamic_domains":
+			app.DynamicDomains = true
+
 		case "check_interval":
 			if !d.NextArg() {
 				return nil, d.ArgErr()

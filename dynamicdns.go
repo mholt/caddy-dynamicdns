@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/libdns/libdns"
 	"go.uber.org/zap"
 )
@@ -35,7 +37,8 @@ type App struct {
 	// For example, assuming your zone is example.com, and you want to update A/AAAA
 	// records for "example.com" and "www.example.com" so that they resolve to this
 	// Caddy instance, configure like so: `"example.com": ["@", "www"]`
-	Domains map[string][]string `json:"domains,omitempty"`
+	Domains        map[string][]string `json:"domains,omitempty"`
+	DynamicDomains bool                `json:"dynamic_domains,omitempty"`
 
 	// How frequently to check the public IP address. Default: 30m
 	CheckInterval caddy.Duration `json:"check_interval,omitempty"`
@@ -138,9 +141,11 @@ func (a App) checkIPAndUpdateDNS() {
 
 	var err error
 
+	allDomains := a.allDomains()
+
 	// if we don't know current IPs for this domain, look them up from DNS
 	if lastIPs == nil {
-		lastIPs, err = a.lookupCurrentIPsFromDNS()
+		lastIPs, err = a.lookupCurrentIPsFromDNS(allDomains)
 		if err != nil {
 			// not the end of the world, but might be an extra initial API hit with the DNS provider
 			a.logger.Error("unable to lookup current IPs from DNS records", zap.Error(err))
@@ -168,13 +173,13 @@ func (a App) checkIPAndUpdateDNS() {
 	// do a simple diff of current and previous IPs to make DNS records to update
 	updatedRecsByZone := make(map[string][]libdns.Record)
 	for _, ip := range currentIPs {
-		if ipListContains(lastIPs, ip) {
-			continue // IP is not different; no update needed
+		if ipListContains(lastIPs, ip) && !ipListContains(lastIPs, nilIP) {
+			continue // IP is not different and no new domains to manage; no update needed
 		}
 
 		a.logger.Info("different IP address", zap.String("new_ip", ip.String()))
 
-		for zone, domains := range a.Domains {
+		for zone, domains := range allDomains {
 			for _, domain := range domains {
 				updatedRecsByZone[zone] = append(updatedRecsByZone[zone], libdns.Record{
 					Type:  recordType(ip),
@@ -217,27 +222,35 @@ func (a App) checkIPAndUpdateDNS() {
 
 // lookupCurrentIPsFromDNS looks up the current IP addresses
 // from DNS records.
-func (a App) lookupCurrentIPsFromDNS() ([]net.IP, error) {
+func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) ([]net.IP, error) {
 	// avoid duplicates
 	currentIPs := make(map[string]net.IP)
 
 	if recordGetter, ok := a.dnsProvider.(libdns.RecordGetter); ok {
-		for zone, names := range a.Domains {
+		for zone, names := range domains {
 			recs, err := recordGetter.GetRecords(a.ctx, zone)
 			if err == nil {
+				recMap := make(map[string]net.IP)
 				for _, r := range recs {
 					if r.Type != recordTypeA && r.Type != recordTypeAAAA {
 						continue
 					}
-					if !stringListContains(names, r.Name) {
-						continue
-					}
 					ip := net.ParseIP(r.Value)
 					if ip != nil {
-						currentIPs[ip.String()] = ip
+						recMap[r.Name] = ip
 					} else {
 						a.logger.Error("invalid IP address found in current DNS record", zap.String("A", r.Value))
 					}
+				}
+				for _, n := range names {
+					ip, ok := recMap[n]
+					if ok {
+						currentIPs[ip.String()] = ip
+					} else {
+						a.logger.Info("domain not found in DNS", zap.String("domain", n))
+						currentIPs[nilIP.String()] = nilIP
+					}
+
 				}
 			} else {
 				return nil, err
@@ -252,6 +265,68 @@ func (a App) lookupCurrentIPsFromDNS() ([]net.IP, error) {
 	}
 
 	return ips, nil
+}
+
+func (a App) lookupManagedDomains() ([]string, error) {
+	cai, err := a.ctx.App("http")
+	if err != nil {
+		return nil, err
+	}
+	var hosts []string
+	ca := cai.(*caddyhttp.App)
+	for _, s := range ca.Servers {
+		for _, r := range s.Routes {
+			for _, ms := range r.MatcherSets {
+				for _, rm := range ms {
+					if hs, ok := rm.(caddyhttp.MatchHost); ok {
+						for _, h := range hs {
+							hosts = append(hosts, h)
+						}
+					}
+
+				}
+			}
+		}
+
+	}
+	return hosts, nil
+}
+
+func (a App) allDomains() map[string][]string {
+	if !a.DynamicDomains {
+		return a.Domains
+	}
+
+	// Read hosts from config.
+	m, err := a.lookupManagedDomains()
+	if err != nil {
+		return a.Domains
+	}
+
+	a.logger.Info("Loaded dynamic domains", zap.Strings("domains", m))
+	d := make(map[string][]string)
+	for zone, domains := range a.Domains {
+		d[zone] = domains
+		for _, h := range m {
+			name, ok := func() (string, bool) {
+				if h == zone {
+					return "@", true
+				}
+				suffix := "."+zone
+				if n := strings.TrimSuffix(h, suffix); n != h {
+					return n, true
+				}
+				return "", false
+			}()
+			if !ok {
+				// Not in this zone.
+				continue
+			}
+			a.logger.Info("Adding dynamic domain", zap.String("domain", name))
+			d[zone] = append(d[zone], name)
+		}
+	}
+	return d
 }
 
 // recordType returns the DNS record type associated with the version of ip.
@@ -283,15 +358,6 @@ func ipListContains(list []net.IP, ip net.IP) bool {
 	return false
 }
 
-func stringListContains(list []string, s string) bool {
-	for _, val := range list {
-		if val == s {
-			return true
-		}
-	}
-	return false
-}
-
 // Remember what the last IPs are so that we
 // don't try to update DNS records every
 // time a new config is loaded; the IPs are
@@ -299,6 +365,9 @@ func stringListContains(list []string, s string) bool {
 var (
 	lastIPs   []net.IP
 	lastIPsMu sync.Mutex
+
+	// Special value indicate there is a new domain to manage.
+	nilIP net.IP
 )
 
 const (
