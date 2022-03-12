@@ -291,6 +291,7 @@ func (a App) lookupManagedDomains() ([]string, error) {
 	}
 	return hosts, nil
 }
+
 func (a App) allDomains() map[string][]string {
 	if !a.DynamicDomains {
 		return a.Domains
