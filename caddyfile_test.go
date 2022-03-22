@@ -81,9 +81,10 @@ func Test_ParseApp(t *testing.T) {
 				versions ipv4
 			}`),
 			want: ` {
-				"versions": [
-					"ipv4"
-				]
+				"versions": {
+					"ipv4": true,
+					"ipv6": false
+				}
 			}`,
 		},
 		{

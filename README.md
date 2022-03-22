@@ -95,7 +95,10 @@ Equivalent JSON config:
 				}
 			],
 			"check_interval": "5m",
-			"versions": ["ipv4", "ipv6"],
+			"versions": {
+				"ipv4": true,
+				"ipv6": true
+			},
 			"dynamic_domains": false
 		}
 	}
@@ -105,7 +108,7 @@ Equivalent JSON config:
 
 ### Disabling IPv6
 
-To disable IPv6 lookups, specify only IPv4 as the version you want enabled.
+To disable IPv6 lookups, specify only IPv4 as the version you want enabled:
 
 Caddyfile config:
 
@@ -121,7 +124,7 @@ Caddyfile config:
 }
 ```
 
-Equivalent JSON config:
+Equivalent JSON config; you may omit the other version you want to keep enabled (omission is assumed to mean enabled):
 
 ```json
 {
@@ -134,7 +137,9 @@ Equivalent JSON config:
 				"name": "cloudflare",
 				"api_token": "{env.CLOUDFLARE_API_TOKEN}"
 			},
-			"versions": ["ipv4"]
+			"versions": {
+				"ipv6": false
+			}
 		}
 	}
 }

@@ -23,7 +23,7 @@ func init() {
 
 // IPSource is a type that can get IP addresses.
 type IPSource interface {
-	GetIPs(context.Context, []IPVersion) ([]net.IP, error)
+	GetIPs(context.Context, IPVersions) ([]net.IP, error)
 }
 
 // SimpleHTTP is an IP source that looks up the public IP addresses by
@@ -80,13 +80,20 @@ func (sh *SimpleHTTP) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public addresses of this machine.
-func (sh SimpleHTTP) GetIPs(ctx context.Context, versions []IPVersion) ([]net.IP, error) {
-	ipv4Client := sh.makeClient("tcp4")
-	ipv6Client := sh.makeClient("tcp6")
+func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
+	var ipv4Client *http.Client
+	if versions.V4Enabled() {
+		ipv4Client = sh.makeClient("tcp4")
+	}
+
+	var ipv6Client *http.Client
+	if versions.V6Enabled() {
+		ipv6Client = sh.makeClient("tcp6")
+	}
 
 	var ips []net.IP
 	for _, endpoint := range sh.Endpoints {
-		if IPVersionsContains(versions, IPv4) {
+		if versions.V4Enabled() {
 			ipv4, err := sh.lookupIP(ctx, ipv4Client, endpoint)
 			if err != nil {
 				sh.logger.Warn("IPv4 lookup failed",
@@ -97,7 +104,7 @@ func (sh SimpleHTTP) GetIPs(ctx context.Context, versions []IPVersion) ([]net.IP
 			}
 		}
 
-		if IPVersionsContains(versions, IPv6) {
+		if versions.V6Enabled() {
 			ipv6, err := sh.lookupIP(ctx, ipv6Client, endpoint)
 			if err != nil {
 				sh.logger.Warn("IPv6 lookup failed",
@@ -192,7 +199,7 @@ func (u *UPnP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 // This implementation ignores the configured IP versions, since
 // we can't really choose whether we're looking for IPv4 or IPv6
 // with UPnP, we just get what we get.
-func (UPnP) GetIPs(ctx context.Context, _ []IPVersion) ([]net.IP, error) {
+func (UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
 	d, err := upnp.DiscoverCtx(ctx)
 	if err != nil {
 		return nil, err

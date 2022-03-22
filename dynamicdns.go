@@ -2,7 +2,6 @@ package dynamicdns
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -38,12 +37,15 @@ type App struct {
 	// For example, assuming your zone is example.com, and you want to update A/AAAA
 	// records for "example.com" and "www.example.com" so that they resolve to this
 	// Caddy instance, configure like so: `"example.com": ["@", "www"]`
-	Domains        map[string][]string `json:"domains,omitempty"`
-	DynamicDomains bool                `json:"dynamic_domains,omitempty"`
+	Domains map[string][]string `json:"domains,omitempty"`
+
+	// If enabled, the "http" app's config will be scanned to assemble the list
+	// of domains for which to enable dynamic DNS updates.
+	DynamicDomains bool `json:"dynamic_domains,omitempty"`
 
 	// The IP versions to enable. By default, both "ipv4" and "ipv6" will be enabled.
-	// To disable IPv6, specify ["ipv4"].
-	Versions []IPVersion `json:"versions,omitempty"`
+	// To disable IPv6, specify {"ipv6": false}.
+	Versions *IPVersions `json:"versions,omitempty"`
 
 	// How frequently to check the public IP address. Default: 30m
 	CheckInterval caddy.Duration `json:"check_interval,omitempty"`
@@ -104,17 +106,6 @@ func (a *App) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("check interval must be at least 1 second")
 	}
 
-	// make sure the IP versions are set and valid
-	if a.Versions == nil {
-		a.Versions = []IPVersion{IPv4, IPv6}
-	}
-	for _, version := range a.Versions {
-		err := version.IsValid()
-		if err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -171,7 +162,7 @@ func (a App) checkIPAndUpdateDNS() {
 	// look up current address(es) from first successful IP source
 	var currentIPs []net.IP
 	for _, ipSrc := range a.ipSources {
-		currentIPs, err = ipSrc.GetIPs(a.ctx, a.Versions)
+		currentIPs, err = ipSrc.GetIPs(a.ctx, *a.Versions)
 		if len(currentIPs) == 0 {
 			err = fmt.Errorf("no IP addresses returned")
 		}
@@ -328,7 +319,7 @@ func (a App) allDomains() map[string][]string {
 				if h == zone {
 					return "@", true
 				}
-				suffix := "."+zone
+				suffix := "." + zone
 				if n := strings.TrimSuffix(h, suffix); n != h {
 					return n, true
 				}
@@ -374,37 +365,21 @@ func ipListContains(list []net.IP, ip net.IP) bool {
 	return false
 }
 
-func stringListContains(list []string, s string) bool {
-	for _, val := range list {
-		if val == s {
-			return true
-		}
-	}
-	return false
+// IPVersions is the IP versions to enable for dynamic DNS.
+// Versions are enabled if true or nil, set to false to disable.
+type IPVersions struct {
+	IPv4 *bool `json:"ipv4,omitempty"`
+	IPv6 *bool `json:"ipv6,omitempty"`
 }
 
-type IPVersion string
-
-const (
-	IPv4 IPVersion = "ipv4"
-	IPv6 IPVersion = "ipv6"
-)
-
-func (ip IPVersion) IsValid() error {
-	switch ip {
-	case IPv4, IPv6:
-		return nil
-	}
-	return errors.New("Invalid IP version")
+// V4Enabled returns true if IPv4 is enabled.
+func (ip IPVersions) V4Enabled() bool {
+	return ip.IPv4 == nil || *ip.IPv4
 }
 
-func IPVersionsContains(versions []IPVersion, version IPVersion) bool {
-	for _, val := range versions {
-		if val == version {
-			return true
-		}
-	}
-	return false
+// V6Enabled returns true if IPv6 is enabled.
+func (ip IPVersions) V6Enabled() bool {
+	return ip.IPv6 == nil || *ip.IPv6
 }
 
 // Remember what the last IPs are so that we
