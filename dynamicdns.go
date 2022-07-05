@@ -37,8 +37,15 @@ type App struct {
 	// For example, assuming your zone is example.com, and you want to update A/AAAA
 	// records for "example.com" and "www.example.com" so that they resolve to this
 	// Caddy instance, configure like so: `"example.com": ["@", "www"]`
-	Domains        map[string][]string `json:"domains,omitempty"`
-	DynamicDomains bool                `json:"dynamic_domains,omitempty"`
+	Domains map[string][]string `json:"domains,omitempty"`
+
+	// If enabled, the "http" app's config will be scanned to assemble the list
+	// of domains for which to enable dynamic DNS updates.
+	DynamicDomains bool `json:"dynamic_domains,omitempty"`
+
+	// The IP versions to enable. By default, both "ipv4" and "ipv6" will be enabled.
+	// To disable IPv6, specify {"ipv6": false}.
+	Versions *IPVersions `json:"versions,omitempty"`
 
 	// How frequently to check the public IP address. Default: 30m
 	CheckInterval caddy.Duration `json:"check_interval,omitempty"`
@@ -155,7 +162,7 @@ func (a App) checkIPAndUpdateDNS() {
 	// look up current address(es) from first successful IP source
 	var currentIPs []net.IP
 	for _, ipSrc := range a.ipSources {
-		currentIPs, err = ipSrc.GetIPs(a.ctx)
+		currentIPs, err = ipSrc.GetIPs(a.ctx, *a.Versions)
 		if len(currentIPs) == 0 {
 			err = fmt.Errorf("no IP addresses returned")
 		}
@@ -312,7 +319,7 @@ func (a App) allDomains() map[string][]string {
 				if h == zone {
 					return "@", true
 				}
-				suffix := "."+zone
+				suffix := "." + zone
 				if n := strings.TrimSuffix(h, suffix); n != h {
 					return n, true
 				}
@@ -356,6 +363,23 @@ func ipListContains(list []net.IP, ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+// IPVersions is the IP versions to enable for dynamic DNS.
+// Versions are enabled if true or nil, set to false to disable.
+type IPVersions struct {
+	IPv4 *bool `json:"ipv4,omitempty"`
+	IPv6 *bool `json:"ipv6,omitempty"`
+}
+
+// V4Enabled returns true if IPv4 is enabled.
+func (ip IPVersions) V4Enabled() bool {
+	return ip.IPv4 == nil || *ip.IPv4
+}
+
+// V6Enabled returns true if IPv6 is enabled.
+func (ip IPVersions) V6Enabled() bool {
+	return ip.IPv6 == nil || *ip.IPv6
 }
 
 // Remember what the last IPs are so that we

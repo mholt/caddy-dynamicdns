@@ -21,6 +21,7 @@ func init() {
 //         check_interval <duration>
 //         provider <name> ...
 //         ip_source upnp|simple_http <endpoint>
+//         versions ipv4|ipv6
 //     }
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
@@ -87,6 +88,33 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 				return nil, err
 			}
 			app.IPSourcesRaw = append(app.IPSourcesRaw, caddyconfig.JSONModuleObject(unm, "source", sourceType, nil))
+
+		case "versions":
+			args := d.RemainingArgs()
+			if len(args) == 0 {
+				return nil, d.Errf("Must specify at least one version")
+			}
+
+			// Set up defaults; if versions are specified,
+			// both versions start as false, then flipped
+			// to true otherwise.
+			falseBool := false
+			app.Versions = &IPVersions{
+				IPv4: &falseBool,
+				IPv6: &falseBool,
+			}
+
+			trueBool := true
+			for _, arg := range args {
+				switch arg {
+				case "ipv4":
+					app.Versions.IPv4 = &trueBool
+				case "ipv6":
+					app.Versions.IPv6 = &trueBool
+				default:
+					return nil, d.Errf("Unsupported version: '%s'", arg)
+				}
+			}
 
 		default:
 			return nil, d.ArgErr()

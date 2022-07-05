@@ -74,12 +74,35 @@ func Test_ParseApp(t *testing.T) {
 				]
 			}`,
 		},
+		{
+			name: "ip versions",
+			d: caddyfile.NewTestDispenser(`
+			dynamic_dns {
+				versions ipv4
+			}`),
+			want: ` {
+				"versions": {
+					"ipv4": true,
+					"ipv6": false
+				}
+			}`,
+		},
+		{
+			name: "ip versions: invalid version",
+			d: caddyfile.NewTestDispenser(`
+			dynamic_dns {
+				versions ipv5
+			}`),
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := parseApp(tt.d, nil)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseApp() error = %v, wantErr %v", err, tt.wantErr)
+			if err != nil {
+				if !tt.wantErr {
+					t.Errorf("parseApp() error = %v, wantErr %v", err, tt.wantErr)
+				}
 				return
 			}
 			gotJSON := string(got.(httpcaddyfile.App).Value)
