@@ -99,7 +99,7 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 			// both versions start as false, then flipped
 			// to true otherwise.
 			falseBool := false
-			app.Versions = &IPVersions{
+			app.Versions = IPVersions{
 				IPv4: &falseBool,
 				IPv6: &falseBool,
 			}

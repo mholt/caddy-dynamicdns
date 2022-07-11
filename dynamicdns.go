@@ -45,7 +45,7 @@ type App struct {
 
 	// The IP versions to enable. By default, both "ipv4" and "ipv6" will be enabled.
 	// To disable IPv6, specify {"ipv6": false}.
-	Versions *IPVersions `json:"versions,omitempty"`
+	Versions IPVersions `json:"versions,omitempty"`
 
 	// How frequently to check the public IP address. Default: 30m
 	CheckInterval caddy.Duration `json:"check_interval,omitempty"`
@@ -162,7 +162,7 @@ func (a App) checkIPAndUpdateDNS() {
 	// look up current address(es) from first successful IP source
 	var currentIPs []net.IP
 	for _, ipSrc := range a.ipSources {
-		currentIPs, err = ipSrc.GetIPs(a.ctx, *a.Versions)
+		currentIPs, err = ipSrc.GetIPs(a.ctx, a.Versions)
 		if len(currentIPs) == 0 {
 			err = fmt.Errorf("no IP addresses returned")
 		}
