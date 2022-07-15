@@ -22,6 +22,7 @@ func init() {
 //         provider <name> ...
 //         ip_source upnp|simple_http <endpoint>
 //         versions ipv4|ipv6
+//         ttl <duration>
 //     }
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
@@ -116,6 +117,15 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 				}
 			}
 
+		case "ttl":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			dur, err := caddy.ParseDuration(d.Val())
+			if err != nil {
+				return nil, err
+			}
+			app.TTL = caddy.Duration(dur)
 		default:
 			return nil, d.ArgErr()
 		}
