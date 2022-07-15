@@ -50,6 +50,9 @@ type App struct {
 	// How frequently to check the public IP address. Default: 30m
 	CheckInterval caddy.Duration `json:"check_interval,omitempty"`
 
+	// The TTL to set on DNS records.
+	TTL caddy.Duration `json:"ttl,omitempty"`
+
 	ipSources   []IPSource
 	dnsProvider libdns.RecordSetter
 
@@ -192,7 +195,7 @@ func (a App) checkIPAndUpdateDNS() {
 					Type:  recordType(ip),
 					Name:  domain,
 					Value: ip.String(),
-					TTL:   time.Duration(a.CheckInterval),
+					TTL:   time.Duration(a.TTL),
 				})
 			}
 		}
