@@ -118,14 +118,14 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 			}
 
 		case "ttl":
-                        if !d.NextArg() {
-                                return nil, d.ArgErr()
-                        }
-                        dur, err := caddy.ParseDuration(d.Val())
-                        if err != nil {
-                                return nil, err
-                        }
-                        app.TTL = caddy.Duration(dur)
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			dur, err := caddy.ParseDuration(d.Val())
+			if err != nil {
+				return nil, err
+			}
+			app.TTL = caddy.Duration(dur)
 		default:
 			return nil, d.ArgErr()
 		}
