@@ -95,47 +95,45 @@ func (sh *SimpleHTTP) Provision(ctx caddy.Context) error {
 
 // GetIPs gets the public addresses of this machine.
 func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
-	var ipv4Client *http.Client
+	out := []net.IP{}
+
+	getForVersion := func(network string, name string) net.IP {
+		client := sh.makeClient(network)
+		for _, endpoint := range sh.Endpoints {
+			ip, err := sh.lookupIP(ctx, client, endpoint)
+			if err != nil {
+				sh.logger.Debug("lookup failed",
+					zap.String("type", name),
+					zap.String("endpoint", endpoint),
+					zap.Error(err))
+				continue
+			}
+			sh.logger.Debug("lookup",
+				zap.String("type", name),
+				zap.String("endpoint", endpoint),
+				zap.String("ip", ip.String()))
+			return ip
+		}
+		sh.logger.Warn("no IP found; consider disabling this IP version",
+			zap.String("type", name))
+		return nil
+	}
+
 	if versions.V4Enabled() {
-		ipv4Client = sh.makeClient("tcp4")
+		ip := getForVersion("tcp4", "IPv4")
+		if ip != nil {
+			out = append(out, ip)
+		}
 	}
 
-	var ipv6Client *http.Client
 	if versions.V6Enabled() {
-		ipv6Client = sh.makeClient("tcp6")
-	}
-
-	var ips []net.IP
-	for _, endpoint := range sh.Endpoints {
-		if versions.V4Enabled() {
-			ipv4, err := sh.lookupIP(ctx, ipv4Client, endpoint)
-			if err != nil {
-				sh.logger.Warn("IPv4 lookup failed",
-					zap.String("endpoint", endpoint),
-					zap.Error(err))
-			} else if !ipListContains(ips, ipv4) {
-				ips = append(ips, ipv4)
-			}
-		}
-
-		if versions.V6Enabled() {
-			ipv6, err := sh.lookupIP(ctx, ipv6Client, endpoint)
-			if err != nil {
-				sh.logger.Warn("IPv6 lookup failed",
-					zap.String("endpoint", endpoint),
-					zap.Error(err))
-			} else if !ipListContains(ips, ipv6) {
-				ips = append(ips, ipv6)
-			}
-		}
-
-		// use first successful service
-		if len(ips) > 0 {
-			break
+		ip := getForVersion("tcp6", "IPv6")
+		if ip != nil {
+			out = append(out, ip)
 		}
 	}
 
-	return ips, nil
+	return out, nil
 }
 
 // makeClient makes an HTTP client that forces use of the specified network type (e.g. "tcp6").
@@ -195,7 +193,9 @@ var defaultHTTPIPServices = []string{
 }
 
 // UPnP gets the IP address from UPnP device.
-type UPnP struct{}
+type UPnP struct {
+	logger *zap.Logger
+}
 
 // CaddyModule returns the Caddy module information.
 func (UPnP) CaddyModule() caddy.ModuleInfo {
@@ -209,11 +209,17 @@ func (u *UPnP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	return nil
 }
 
+// Provision sets up the module.
+func (u *UPnP) Provision(ctx caddy.Context) error {
+	u.logger = ctx.Logger(u)
+	return nil
+}
+
 // GetIPs gets the public address(es) of this machine.
 // This implementation ignores the configured IP versions, since
 // we can't really choose whether we're looking for IPv4 or IPv6
 // with UPnP, we just get what we get.
-func (UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
+func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
 	d, err := upnp.DiscoverCtx(ctx)
 	if err != nil {
 		return nil, err
@@ -228,6 +234,8 @@ func (UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
 	if ip == nil {
 		return nil, fmt.Errorf("invalid IP: %s", ipStr)
 	}
+	u.logger.Debug("lookup",
+		zap.String("ip", ip.String()))
 
 	return []net.IP{ip}, nil
 }
@@ -237,7 +245,8 @@ var (
 	_ IPSource              = (*SimpleHTTP)(nil)
 	_ caddy.Provisioner     = (*SimpleHTTP)(nil)
 	_ caddyfile.Unmarshaler = (*SimpleHTTP)(nil)
-	_ caddyfile.Unmarshaler = (*UPnP)(nil)
 
-	_ IPSource = (*UPnP)(nil)
+	_ IPSource              = (*UPnP)(nil)
+	_ caddy.Provisioner     = (*UPnP)(nil)
+	_ caddyfile.Unmarshaler = (*UPnP)(nil)
 )
