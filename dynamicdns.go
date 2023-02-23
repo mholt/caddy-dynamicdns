@@ -201,7 +201,13 @@ func (a App) checkIPAndUpdateDNS() {
 			continue // IP is not different and no new domains to manage; no update needed
 		}
 
-		a.logger.Info("different IP address", zap.String("new_ip", ip.String()))
+		oldIPStrings := make([]string, len(lastIPs))
+		for i, val := range lastIPs {
+			oldIPStrings[i] = val.String()
+		}
+		a.logger.Info("different IP address",
+			zap.String("new_ip", ip.String()),
+			zap.Strings("old_ips", oldIPStrings))
 
 		for zone, domains := range allDomains {
 			for _, domain := range domains {
@@ -239,7 +245,12 @@ func (a App) checkIPAndUpdateDNS() {
 		}
 	}
 
-	a.logger.Info("finished updating DNS")
+	currentIPStrings := make([]string, len(currentIPs))
+	for i, val := range currentIPs {
+		currentIPStrings[i] = val.String()
+	}
+	a.logger.Info("finished updating DNS",
+		zap.Strings("current_ips", currentIPStrings))
 
 	lastIPs = currentIPs
 }
@@ -247,37 +258,40 @@ func (a App) checkIPAndUpdateDNS() {
 // lookupCurrentIPsFromDNS looks up the current IP addresses
 // from DNS records.
 func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) ([]net.IP, error) {
+	types := []string{recordTypeA, recordTypeAAAA}
+
 	// avoid duplicates
 	currentIPs := make(map[string]net.IP)
 
 	if recordGetter, ok := a.dnsProvider.(libdns.RecordGetter); ok {
 		for zone, names := range domains {
 			recs, err := recordGetter.GetRecords(a.ctx, zone)
-			if err == nil {
-				recMap := make(map[string]net.IP)
-				for _, r := range recs {
-					if r.Type != recordTypeA && r.Type != recordTypeAAAA {
-						continue
-					}
-					ip := net.ParseIP(r.Value)
-					if ip != nil {
-						recMap[r.Name] = ip
-					} else {
-						a.logger.Error("invalid IP address found in current DNS record", zap.String("A", r.Value))
-					}
+			if err != nil {
+				return nil, err
+			}
+
+			recMap := make(map[string]net.IP)
+			for _, r := range recs {
+				if r.Type != recordTypeA && r.Type != recordTypeAAAA {
+					continue
 				}
-				for _, n := range names {
-					ip, ok := recMap[n]
+				ip := net.ParseIP(r.Value)
+				if ip != nil {
+					recMap[r.Type+"|"+r.Name] = ip
+				} else {
+					a.logger.Error("invalid IP address found in current DNS record", zap.String("A", r.Value))
+				}
+			}
+			for _, n := range names {
+				for _, t := range types {
+					ip, ok := recMap[t+"|"+n]
 					if ok {
 						currentIPs[ip.String()] = ip
 					} else {
 						a.logger.Info("domain not found in DNS", zap.String("domain", n))
 						currentIPs[nilIP.String()] = nilIP
 					}
-
 				}
-			} else {
-				return nil, err
 			}
 		}
 	}
