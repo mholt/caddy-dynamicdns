@@ -57,7 +57,6 @@ type SimpleHTTP struct {
 	// - https://ifconfig.me
 	// - https://icanhazip.com
 	// - https://ident.me
-	// - https://bot.whatismyipaddress.com
 	// - https://ipecho.net/plain
 	Endpoints []string `json:"endpoints,omitempty"`
 
@@ -188,7 +187,6 @@ var defaultHTTPIPServices = []string{
 	"https://ifconfig.me",
 	"https://icanhazip.com",
 	"https://ident.me",
-	"https://bot.whatismyipaddress.com",
 	"https://ipecho.net/plain",
 }
 
