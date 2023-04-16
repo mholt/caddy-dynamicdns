@@ -351,11 +351,10 @@ func (c Command) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, err
 		return nil, fmt.Errorf("command %s exited with: %d", c.Cmd, exitCode)
 	}
 
-	ipStr := strings.TrimSpace(string(stdout.String()))
-	ipArr := strings.Split(ipStr, ",")
+	ipArr := strings.Split(stdout.String(), ",")
 
 	for i := 0; i < len(ipArr); i++ {
-		ip := net.ParseIP(ipArr[i])
+		ip := net.ParseIP(strings.TrimSpace(ipArr[i]))
 		if ip == nil {
 			c.logger.Error("parsing ip failed",
 				zap.String("command", c.Cmd),
