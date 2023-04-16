@@ -15,12 +15,14 @@
 package dynamicdns
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -33,6 +35,7 @@ import (
 func init() {
 	caddy.RegisterModule(SimpleHTTP{})
 	caddy.RegisterModule(UPnP{})
+	caddy.RegisterModule(CMD{})
 }
 
 // IPSource is a type that can get IP addresses.
@@ -238,6 +241,70 @@ func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
 	return []net.IP{ip}, nil
 }
 
+// CMD is an IP source that looks up the public IP addresses by
+// executing a script or command from your filesystem.
+//
+// The command must return the IP addresses comma spreaded in plain text.
+type CMD struct {
+	Command string `json:"cmd,omitempty"`
+
+	logger *zap.Logger
+}
+
+// CaddyModule returns the Caddy module information.
+func (CMD) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "dynamic_dns.ip_sources.simple_http",
+		New: func() caddy.Module { return new(CMD) },
+	}
+}
+
+func (c *CMD) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	var (
+		unused string
+		cmd    string
+	)
+	if !d.AllArgs(&unused, &cmd) {
+		return d.ArgErr()
+	}
+	c.Command = cmd
+	return nil
+}
+
+// Provision sets up the module.
+func (c *CMD) Provision(ctx caddy.Context) error {
+	c.logger = ctx.Logger(c)
+	return nil
+}
+
+// GetIPs gets the public addresses of this machine.
+func (c CMD) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
+	out := []net.IP{}
+	command := c.Command
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := exec.Command("bash", "-c", command)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		return nil, err
+	}
+	// Here we need to evalutate StdOut and StdErr
+	ipStr := strings.TrimSpace(string(stdout.String()))
+	ipArr := strings.Split(ipStr, ",")
+
+	for i := 0; i < len(ipArr); i++ {
+		ip := net.ParseIP(ipArr[i])
+		if ip == nil {
+			return nil, fmt.Errorf("invalid IP: %s", ipStr)
+		}
+		out = append(out, ip)
+	}
+	return out, err
+}
+
 // Interface guards
 var (
 	_ IPSource              = (*SimpleHTTP)(nil)
@@ -247,4 +314,8 @@ var (
 	_ IPSource              = (*UPnP)(nil)
 	_ caddy.Provisioner     = (*UPnP)(nil)
 	_ caddyfile.Unmarshaler = (*UPnP)(nil)
+
+	_ IPSource              = (*CMD)(nil)
+	_ caddy.Provisioner     = (*CMD)(nil)
+	_ caddyfile.Unmarshaler = (*CMD)(nil)
 )
