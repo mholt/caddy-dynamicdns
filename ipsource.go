@@ -35,7 +35,7 @@ import (
 func init() {
 	caddy.RegisterModule(SimpleHTTP{})
 	caddy.RegisterModule(UPnP{})
-	caddy.RegisterModule(CMD{})
+	caddy.RegisterModule(Command{})
 }
 
 // IPSource is a type that can get IP addresses.
@@ -241,25 +241,38 @@ func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
 	return []net.IP{ip}, nil
 }
 
-// CMD is an IP source that looks up the public IP addresses by
+// Command is an IP source that looks up the public IP addresses by
 // executing a script or command from your filesystem.
 //
 // The command must return the IP addresses comma spreaded in plain text.
-type CMD struct {
-	Command string `json:"cmd,omitempty"`
+type Command struct {
+	// The command to execute.
+	Cmd string `json:"command,omitempty"`
+
+	// Arguments to the command. Placeholders are expanded
+	// in arguments, so use caution to not introduce any
+	// security vulnerabilities with the command.
+	Args []string `json:"args,omitempty"`
+
+	// The directory in which to run the command.
+	Dir string `json:"dir,omitempty"`
+
+	// How long to wait for the command to terminate
+	// before forcefully closing it. Default: 30s
+	Timeout caddy.Duration `json:"timeout,omitempty"`
 
 	logger *zap.Logger
 }
 
 // CaddyModule returns the Caddy module information.
-func (CMD) CaddyModule() caddy.ModuleInfo {
+func (Command) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "dynamic_dns.ip_sources.simple_http",
-		New: func() caddy.Module { return new(CMD) },
+		ID:  "dynamic_dns.ip_sources.command",
+		New: func() caddy.Module { return new(Command) },
 	}
 }
 
-func (c *CMD) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+func (c *Command) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	var (
 		unused string
 		cmd    string
@@ -267,27 +280,49 @@ func (c *CMD) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	if !d.AllArgs(&unused, &cmd) {
 		return d.ArgErr()
 	}
-	c.Command = cmd
+	c.Cmd = cmd
 	return nil
 }
 
 // Provision sets up the module.
-func (c *CMD) Provision(ctx caddy.Context) error {
+func (c *Command) Provision(ctx caddy.Context) error {
 	c.logger = ctx.Logger(c)
 	return nil
 }
 
 // GetIPs gets the public addresses of this machine.
-func (c CMD) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
+func (c Command) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
 	out := []net.IP{}
-	command := c.Command
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd := exec.Command("bash", "-c", command)
+
+	repl := ctx.Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
+
+	// expand placeholders in command args;
+	// notably, we do not expand placeholders
+	// in the command itself for safety reasons
+	expandedArgs := make([]string, len(c.Args))
+	for i := range c.Args {
+		expandedArgs[i] = repl.ReplaceAll(c.Args[i], "")
+	}
+
+	var cancel context.CancelFunc
+	if c.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(c.Timeout))
+	}
+
+	cmd := exec.CommandContext(ctx, c.Cmd, expandedArgs...)
+	cmd.Dir = c.Dir
+
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+
+	if cancel != nil {
+		defer cancel()
+	}
+
 	err := cmd.Run()
+
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +350,7 @@ var (
 	_ caddy.Provisioner     = (*UPnP)(nil)
 	_ caddyfile.Unmarshaler = (*UPnP)(nil)
 
-	_ IPSource              = (*CMD)(nil)
-	_ caddy.Provisioner     = (*CMD)(nil)
-	_ caddyfile.Unmarshaler = (*CMD)(nil)
+	_ IPSource              = (*Command)(nil)
+	_ caddy.Provisioner     = (*Command)(nil)
+	_ caddyfile.Unmarshaler = (*Command)(nil)
 )
