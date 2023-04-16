@@ -53,6 +53,10 @@ type App struct {
 	// Caddy instance, configure like so: `"example.com": ["@", "www"]`
 	Domains map[string][]string `json:"domains,omitempty"`
 
+	// If enabled, no new DNS records will be created. Only existing records will be updated.
+	// This means that the A or AAAA records need to be created manually ahead of time.
+	UpdateOnly bool `json:"update_only,omitempty"`
+
 	// If enabled, the "http" app's config will be scanned to assemble the list
 	// of domains for which to enable dynamic DNS updates.
 	DynamicDomains bool `json:"dynamic_domains,omitempty"`
@@ -210,7 +214,32 @@ func (a App) checkIPAndUpdateDNS() {
 			zap.Strings("old_ips", oldIPStrings))
 
 		for zone, domains := range allDomains {
+			var zoneRecords []libdns.Record
+			if a.UpdateOnly {
+				if recordGetter, ok := a.dnsProvider.(libdns.RecordGetter); ok {
+					zoneRecords, err = recordGetter.GetRecords(a.ctx, zone)
+					if err != nil {
+						a.logger.Error("looking up existing DNS records",
+							zap.String("zone", zone),
+							zap.Error(err))
+						continue
+					}
+				}
+			}
+
 			for _, domain := range domains {
+				if a.UpdateOnly {
+					// only update if the record already exists
+					if !recordExists(zoneRecords, domain, recordType(ip)) {
+						a.logger.Debug("record doesn't exist; skipping update",
+							zap.String("zone", zone),
+							zap.String("name", domain),
+							zap.String("type", recordType(ip)),
+						)
+						continue
+					}
+				}
+
 				updatedRecsByZone[zone] = append(updatedRecsByZone[zone], libdns.Record{
 					Type:  recordType(ip),
 					Name:  domain,
@@ -390,6 +419,16 @@ func removeDuplicateIPs(ips []net.IP) []net.IP {
 func ipListContains(list []net.IP, ip net.IP) bool {
 	for _, ipInList := range list {
 		if ipInList.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// recordExists returns true if a record with the given domain and type exists.
+func recordExists(records []libdns.Record, domain string, recordType string) bool {
+	for _, r := range records {
+		if r.Type == recordType && r.Name == domain {
 			return true
 		}
 	}
