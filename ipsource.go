@@ -33,6 +33,7 @@ import (
 func init() {
 	caddy.RegisterModule(SimpleHTTP{})
 	caddy.RegisterModule(UPnP{})
+	caddy.RegisterModule(NetInterface{})
 }
 
 // IPSource is a type that can get IP addresses.
@@ -238,6 +239,74 @@ func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
 	return []net.IP{ip}, nil
 }
 
+// NetInterface gets the IP address from a network interface by name.
+type NetInterface struct {
+	// The name of the network interface.
+	Name string `json:"name,omitempty"`
+
+	logger *zap.Logger
+}
+
+// CaddyModule returns the Caddy module information.
+func (NetInterface) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "dynamic_dns.ip_sources.interface",
+		New: func() caddy.Module { return new(NetInterface) },
+	}
+}
+
+func (u *NetInterface) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	d.Next() // skip directive name
+	if !d.NextArg() {
+		return d.ArgErr()
+	}
+	u.Name = d.Val()
+	return nil
+}
+
+// Provision sets up the module.
+func (u *NetInterface) Provision(ctx caddy.Context) error {
+	u.logger = ctx.Logger(u)
+	return nil
+}
+
+// GetIPs gets the public address(es) of from the network interface.
+func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
+	iface, err := net.InterfaceByName(u.Name)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't find interface '%s': %v", u.Name, err)
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return nil, fmt.Errorf("couldn't load addresses for interface '%s': %v", u.Name, err)
+	}
+
+	ips := []net.IP{}
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() {
+			continue
+		}
+		if versions.V4Enabled() && ipNet.IP.To4() != nil {
+			ips = append(ips, ipNet.IP)
+			continue
+		}
+		if versions.V6Enabled() && ipNet.IP.To16() != nil {
+			ips = append(ips, ipNet.IP)
+			continue
+		}
+	}
+
+	stringIps := make([]string, len(ips))
+	for i, ip := range ips {
+		stringIps[i] = ip.String()
+	}
+	u.logger.Debug("lookup",
+		zap.Strings("ip", stringIps))
+
+	return ips, nil
+}
+
 // Interface guards
 var (
 	_ IPSource              = (*SimpleHTTP)(nil)
@@ -247,4 +316,8 @@ var (
 	_ IPSource              = (*UPnP)(nil)
 	_ caddy.Provisioner     = (*UPnP)(nil)
 	_ caddyfile.Unmarshaler = (*UPnP)(nil)
+
+	_ IPSource              = (*NetInterface)(nil)
+	_ caddy.Provisioner     = (*NetInterface)(nil)
+	_ caddyfile.Unmarshaler = (*NetInterface)(nil)
 )
