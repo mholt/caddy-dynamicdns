@@ -272,15 +272,17 @@ func (Command) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
+// UnmarshalCaddyfile parses the module's Caddyfile config. Syntax:
+//
+//	exec <command> <args...>
 func (c *Command) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	var (
-		unused string
-		cmd    string
-	)
-	if !d.AllArgs(&unused, &cmd) {
-		return d.ArgErr()
+	for d.Next() {
+		if !d.NextArg() {
+			return d.ArgErr()
+		}
+		c.Cmd = d.Val()
+		c.Args = d.RemainingArgs()
 	}
-	c.Cmd = cmd
 	return nil
 }
 
