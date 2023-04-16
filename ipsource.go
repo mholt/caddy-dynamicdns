@@ -302,6 +302,7 @@ func (c Command) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, err
 	out := []net.IP{}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	var cancel context.CancelFunc
 
 	repl := ctx.Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
 
@@ -313,14 +314,12 @@ func (c Command) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, err
 		expandedArgs[i] = repl.ReplaceAll(c.Args[i], "")
 	}
 
-	var cancel context.CancelFunc
 	if c.Timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(c.Timeout))
 	}
 
 	cmd := exec.CommandContext(ctx, c.Cmd, expandedArgs...)
 	cmd.Dir = c.Dir
-
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -328,26 +327,49 @@ func (c Command) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, err
 		defer cancel()
 	}
 
+	c.logger.Debug("running command",
+		zap.String("command", c.Cmd),
+		zap.Strings("args", expandedArgs),
+		zap.String("dir", c.Dir),
+		zap.Int64("timeout", int64(time.Duration(c.Timeout))),
+	)
+
 	err := cmd.Run()
-
-	exitCode := cmd.ProcessState.ExitCode()
-	if exitCode != 0 {
-		return nil, fmt.Errorf("Process exit with: %d", exitCode)
-	}
-
 	if err != nil {
 		return nil, err
 	}
-	// Here we need to evalutate StdOut and StdErr
+
+	exitCode := cmd.ProcessState.ExitCode()
+	if exitCode != 0 || len(stderr.String()) > 0 {
+		c.logger.Error("command execution failed",
+			zap.String("command", c.Cmd),
+			zap.Strings("args", expandedArgs),
+			zap.String("dir", c.Dir),
+			zap.String("stdout", stdout.String()),
+			zap.String("stderr", stderr.String()),
+			zap.Int("exit code", exitCode))
+		return nil, fmt.Errorf("command %s exited with: %d", c.Cmd, exitCode)
+	}
+
 	ipStr := strings.TrimSpace(string(stdout.String()))
 	ipArr := strings.Split(ipStr, ",")
 
 	for i := 0; i < len(ipArr); i++ {
 		ip := net.ParseIP(ipArr[i])
 		if ip == nil {
-			return nil, fmt.Errorf("invalid IP: %s", ipStr)
+			c.logger.Error("parsing ip failed",
+				zap.String("command", c.Cmd),
+				zap.Strings("args", expandedArgs),
+				zap.String("stdout", stdout.String()),
+				zap.String("ip", ipArr[i]))
+			return nil, fmt.Errorf("invalid IP: %s", ipArr[i])
 		}
 		out = append(out, ip)
+		c.logger.Debug("parsed ip succesfull",
+			zap.String("command", c.Cmd),
+			zap.Strings("args", expandedArgs),
+			zap.String("stdout", stdout.String()),
+			zap.String("ip", ip.String()))
 	}
 	return out, err
 }
