@@ -323,6 +323,11 @@ func (c Command) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, err
 
 	err := cmd.Run()
 
+	exitCode := cmd.ProcessState.ExitCode()
+	if exitCode != 0 {
+		return nil, fmt.Errorf("Process exit with: %d", exitCode)
+	}
+
 	if err != nil {
 		return nil, err
 	}
