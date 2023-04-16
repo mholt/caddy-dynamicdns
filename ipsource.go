@@ -287,6 +287,11 @@ func (c *Command) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 // Provision sets up the module.
 func (c *Command) Provision(ctx caddy.Context) error {
 	c.logger = ctx.Logger(c)
+
+	if c.Timeout <= 0 {
+		c.Timeout = caddy.Duration(30 * time.Second)
+	}
+
 	return nil
 }
 
