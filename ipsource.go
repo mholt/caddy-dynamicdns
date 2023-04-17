@@ -304,14 +304,14 @@ func (c Command) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, err
 	var stderr bytes.Buffer
 	var cancel context.CancelFunc
 
-	repl := ctx.Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
+	replacer := caddy.NewReplacer()
 
 	// expand placeholders in command args;
 	// notably, we do not expand placeholders
 	// in the command itself for safety reasons
 	expandedArgs := make([]string, len(c.Args))
 	for i := range c.Args {
-		expandedArgs[i] = repl.ReplaceAll(c.Args[i], "")
+		expandedArgs[i] = replacer.ReplaceAll(c.Args[i], "")
 	}
 
 	if c.Timeout > 0 {
