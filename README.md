@@ -65,6 +65,7 @@ Caddyfile config ([global options](https://caddyserver.com/docs/caddyfile/option
 		ip_source upnp
 		ip_source simple_http https://icanhazip.com
 		ip_source simple_http https://api64.ipify.org
+		ip_source interface eth0
 		check_interval 5m
 		versions ipv4 ipv6
 		ttl 1h
@@ -93,6 +94,10 @@ Equivalent JSON config:
 				{
 					"source": "simple_http",
 					"endpoints": ["https://icanhazip.com", "https://api64.ipify.org"]
+				},
+				{
+					"source": "interface",
+					"name": "eth0"
 				}
 			],
 			"check_interval": "5m",

@@ -41,7 +41,8 @@ func Test_ParseApp(t *testing.T) {
 					{
 						"source": "upnp"
 					}
-				]
+				],
+				"versions": {}
 			}`,
 		},
 		{
@@ -61,7 +62,8 @@ func Test_ParseApp(t *testing.T) {
 						"source": "simple_http",
 						"endpoints": ["http://2.com"]
 					}
-				]
+				],
+				"versions": {}
 			}`,
 		},
 		{
@@ -85,7 +87,24 @@ func Test_ParseApp(t *testing.T) {
 						"source": "simple_http",
 						"endpoints": ["http://2.com"]
 					}
-				]
+				],
+				"versions": {}
+			}`,
+		},
+		{
+			name: "ip_source: interface",
+			d: caddyfile.NewTestDispenser(`
+			dynamic_dns {
+				ip_source interface eth0
+			}`),
+			want: ` {
+				"ip_sources": [
+					{
+						"name": "eth0",
+						"source": "interface"
+					}
+				],
+				"versions": {}
 			}`,
 		},
 		{
