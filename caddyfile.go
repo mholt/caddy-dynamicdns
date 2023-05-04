@@ -29,14 +29,16 @@ func init() {
 // Syntax:
 //
 //	dynamic_dns {
-//	    domains {
-//	        <zone> <names...>
-//	    }
-//	    check_interval <duration>
-//	    provider <name> ...
-//	    ip_source upnp|simple_http <endpoint>
-//	    versions ipv4|ipv6
-//	    ttl <duration>
+//		domains {
+//			<zone> <names...>
+//		}
+//		check_interval <duration>
+//		provider <name> ...
+//		ip_source upnp|simple_http <endpoint>
+//		update_only
+//		dynamic_domains
+//		versions ipv4|ipv6
+//		ttl <duration>
 //	}
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
@@ -67,7 +69,16 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 				app.Domains[zone] = names
 			}
 
+		case "update_only":
+			if d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			app.UpdateOnly = true
+
 		case "dynamic_domains":
+			if d.NextArg() {
+				return nil, d.ArgErr()
+			}
 			app.DynamicDomains = true
 
 		case "check_interval":
