@@ -178,6 +178,7 @@ func (a App) checkIPAndUpdateDNS() {
 			// not the end of the world, but might be an extra initial API hit with the DNS provider
 			a.logger.Error("unable to lookup current IPs from DNS records", zap.Error(err))
 		}
+		a.logger.Debug("looked up current IPs from DNS", zap.Any("lastIPs", lastIPs))
 	}
 
 	// look up current address(es) from first successful IP source
@@ -251,7 +252,14 @@ func (a App) checkIPAndUpdateDNS() {
 			)
 		}
 		for _, rec := range records {
-			lastIPs[joinDomainZone(rec.Name, zone)][rec.Type] = []net.IP{net.ParseIP(rec.Value)}
+			name := joinDomainZone(rec.Name, zone)
+			if lastIPs == nil {
+				lastIPs = make(domainTypeIPs)
+			}
+			if lastIPs[name] == nil {
+				lastIPs[name] = make(map[string][]net.IP)
+			}
+			lastIPs[name][rec.Type] = []net.IP{net.ParseIP(rec.Value)}
 		}
 	}
 
@@ -283,27 +291,30 @@ func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) (domainTypeIPs
 				if r.Type != recordTypeA && r.Type != recordTypeAAAA {
 					continue
 				}
+				a.logger.Debug("found DNS record", zap.String("type", r.Type), zap.String("name", r.Name), zap.String("zone", zone), zap.String("value", r.Value))
 				ip := net.ParseIP(r.Value)
 				if ip != nil {
-					if _, ok := recMap[joinDomainZone(r.Name, zone)]; !ok {
-						recMap[joinDomainZone(r.Name, zone)] = make(map[string]net.IP)
+					name := joinDomainZone(r.Name, zone)
+					if _, ok := recMap[name]; !ok {
+						recMap[name] = make(map[string]net.IP)
 					}
-					recMap[joinDomainZone(r.Name, zone)][r.Type] = ip
+					recMap[name][r.Type] = ip
 				} else {
-					a.logger.Error("invalid IP address found in current DNS record", zap.String("A", r.Value))
+					a.logger.Error("invalid IP address found in current DNS record", zap.String("value", r.Value), zap.String("type", r.Type))
 				}
 			}
 			for _, n := range names {
+				name := joinDomainZone(n, zone)
 				ips := make(map[string][]net.IP)
 				for _, t := range types {
-					if ip, ok := recMap[n][t]; ok {
+					if ip, ok := recMap[name][t]; ok {
 						ips[t] = []net.IP{ip}
 					} else {
-						a.logger.Info("domain not found in DNS", zap.String("domain", n))
+						a.logger.Info("domain not found in DNS", zap.String("domain", name))
 						ips[t] = []net.IP{nilIP}
 					}
 				}
-				currentIPs[n] = ips
+				currentIPs[name] = ips
 			}
 		}
 	}
