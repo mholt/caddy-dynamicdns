@@ -66,11 +66,7 @@ func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
 				if app.Domains == nil {
 					app.Domains = make(map[string][]string)
 				}
-				if app.Domains[zone] != nil {
-					app.Domains[zone] = append(app.Domains[zone], names...)
-				} else {
-					app.Domains[zone] = names
-				}
+				app.Domains[zone] = append(app.Domains[zone], names...)
 			}
 
 		case "update_only":
