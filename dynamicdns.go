@@ -417,7 +417,7 @@ func ipListContains(list []net.IP, ip net.IP) bool {
 
 // joinDomainZone joins a domain and zone.
 func joinDomainZone(domain, zone string) string {
-	if domain == "@" {
+	if domain == "" || domain == "@" {
 		return zone
 	}
 	return domain + "." + zone
