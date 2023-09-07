@@ -204,7 +204,7 @@ func (a App) checkIPAndUpdateDNS() {
 	for _, ip := range currentIPs {
 		for zone, domains := range allDomains {
 			for _, domain := range domains {
-				oldIps, found := lastIPs[joinDomainZone(domain, zone)][recordType(ip)]
+				oldIps, found := lastIPs[libdns.AbsoluteName(domain, zone)][recordType(ip)]
 				if !found && a.UpdateOnly {
 					a.logger.Debug("record doesn't exist; skipping update",
 						zap.String("zone", zone),
@@ -252,7 +252,7 @@ func (a App) checkIPAndUpdateDNS() {
 			)
 		}
 		for _, rec := range records {
-			name := joinDomainZone(rec.Name, zone)
+			name := libdns.AbsoluteName(rec.Name, zone)
 			if lastIPs == nil {
 				lastIPs = make(domainTypeIPs)
 			}
@@ -294,7 +294,7 @@ func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) (domainTypeIPs
 				a.logger.Debug("found DNS record", zap.String("type", r.Type), zap.String("name", r.Name), zap.String("zone", zone), zap.String("value", r.Value))
 				ip := net.ParseIP(r.Value)
 				if ip != nil {
-					name := joinDomainZone(r.Name, zone)
+					name := libdns.AbsoluteName(r.Name, zone)
 					if _, ok := recMap[name]; !ok {
 						recMap[name] = make(map[string]net.IP)
 					}
@@ -304,7 +304,7 @@ func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) (domainTypeIPs
 				}
 			}
 			for _, n := range names {
-				name := joinDomainZone(n, zone)
+				name := libdns.AbsoluteName(n, zone)
 				ips := make(map[string][]net.IP)
 				for _, t := range types {
 					if ip, ok := recMap[name][t]; ok {
@@ -413,14 +413,6 @@ func ipListContains(list []net.IP, ip net.IP) bool {
 		}
 	}
 	return false
-}
-
-// joinDomainZone joins a domain and zone.
-func joinDomainZone(domain, zone string) string {
-	if domain == "" || domain == "@" {
-		return zone
-	}
-	return domain + "." + zone
 }
 
 // IPVersions is the IP versions to enable for dynamic DNS.
