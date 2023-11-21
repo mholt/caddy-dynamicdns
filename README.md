@@ -7,6 +7,9 @@ It simply queries a service (an "IP source") for your public IP address every so
 
 IP sources and DNS providers are modular. This app comes with IP source modules. However, you'll need to plug in [a DNS provider module from caddy-dns](https://github.com/caddy-dns) so that your DNS records can be updated.
 
+> [!NOTE]
+> This is not an official repository of the [Caddy Web Server](https://github.com/caddyserver) organization.
+
 
 ### Minimal example config
 
