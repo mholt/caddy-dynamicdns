@@ -240,7 +240,7 @@ func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
 	return []net.IP{ip}, nil
 }
 
-// NetInterface gets the IP address from a network interface by name.
+// NetInterface gets the public IP address(es) (at most 1 IPv4 and 1 IPv6) from a network interface by name.
 type NetInterface struct {
 	// The name of the network interface.
 	Name string `json:"name,omitempty"`
@@ -271,7 +271,7 @@ func (u *NetInterface) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-// GetIPs gets the public address(es) of from the network interface.
+// GetIPs gets the public address of from the network interface.
 func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
 	iface, err := net.InterfaceByName(u.Name)
 	if err != nil {
