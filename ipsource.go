@@ -285,7 +285,7 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP
 	ips := []net.IP{}
 	for _, addr := range addrs {
 		ipNet, ok := addr.(*net.IPNet)
-		if !ok || ipNet.IP.IsLoopback() {
+		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsPrivate() || !ipNet.IP.IsGlobalUnicast() {
 			continue
 		}
 		if versions.V4Enabled() && ipNet.IP.To4() != nil {
