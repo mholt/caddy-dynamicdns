@@ -283,17 +283,20 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP
 	}
 
 	ips := []net.IP{}
+	foundIPV4, foundIPV6 := false, false
 	for _, addr := range addrs {
 		ipNet, ok := addr.(*net.IPNet)
 		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsPrivate() || !ipNet.IP.IsGlobalUnicast() {
 			continue
 		}
-		if versions.V4Enabled() && ipNet.IP.To4() != nil {
+		if versions.V4Enabled() && !foundIPV4 && ipNet.IP.To4() != nil {
 			ips = append(ips, ipNet.IP)
+			foundIPV4 = true
 			continue
 		}
-		if versions.V6Enabled() && ipNet.IP.To16() != nil {
+		if versions.V6Enabled() && !foundIPV6 && ipNet.IP.To16() != nil {
 			ips = append(ips, ipNet.IP)
+			foundIPV6 = true
 			continue
 		}
 	}
