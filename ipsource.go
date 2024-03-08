@@ -299,6 +299,9 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP
 			foundIPV6 = true
 			continue
 		}
+		if ( foundIPV4 || !versions.V4Enabled ) && ( foundIPV6 || !versions.V6Enabled ) {
+			break
+		}
 	}
 
 	stringIps := make([]string, len(ips))
