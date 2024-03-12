@@ -51,7 +51,9 @@ This updates DNS records for `example.com` via Cloudflare's API. (Notice how the
 
 Here's a more filled-out config, will all the options used.
 
-This config prefers to get the IP address locally via UPnP (if edge router has UPnP enabled, of course), but if that fails, will fall back to querying `icanhazip.com` for the IP address. It then updates records for `example.com`, `www.example.com`, and `subdomain.example.net`. Notice how the zones and subdomains are separate; this eliminates ambiguity since we don't have to try to be clever and figure out the zone via recursive, authoritative DNS lookups. We also check every 5 minutes instead of 30 minutes (default), and set a TTL of 1 hour for the records.
+This config prefers to get the IP address locally via UPnP (if edge router has UPnP enabled, of course), but if that fails, will fall back to querying `icanhazip.com` for the IP address. If those fail, it will try to find the IP address from the eth0 interface. It then updates records for `example.com`, `www.example.com`, and `subdomain.example.net`. Notice how the zones and subdomains are separate; this eliminates ambiguity since we don't have to try to be clever and figure out the zone via recursive, authoritative DNS lookups. We also check every 5 minutes instead of 30 minutes (default), and set a TTL of 1 hour for the records.
+
+The interface option will return at most 1 IPv4 and 1 IPv6 address. It will only return addresses that are not [private according to RFC 1918 (IPv4) and RFC 4193 (IPv6)](https://pkg.go.dev/net#IP.IsPrivate), and is a [global unicast address according to RFC 1122, RFC 4632, and RFC 4291 with the exception of IPv4 directed broadcast addresses](https://pkg.go.dev/net#IP.IsGlobalUnicast).
 
 Note that it's redundant to specify both IP versions in the config, since the default is to enable both IPv4 and IPv6. It's purpose is to allow disabling one or the other if your server is only reachable via one of the versions. It's included in this config example for posterity.
 
