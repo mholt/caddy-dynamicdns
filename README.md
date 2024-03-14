@@ -10,8 +10,10 @@ IP sources and DNS providers are modular. This app comes with IP source modules.
 > [!NOTE]
 > This is not an official repository of the [Caddy Web Server](https://github.com/caddyserver) organization.
 
+### Sample configurations
 
-### Minimal example config
+<details>
+<summary>Minimal example config</summary>
 
 Caddyfile config ([global options](https://caddyserver.com/docs/caddyfile/options)):
 
@@ -45,9 +47,11 @@ Equivalent JSON config:
 ```
 
 This updates DNS records for `example.com` via Cloudflare's API. (Notice how the DNS zone is separate from record names/subdomains.)
+</details>
 
 
-### Complex example config
+<details>
+<summary>Complex example config</summary>
 
 Here's a more filled-out config, will all the options used.
 
@@ -116,9 +120,59 @@ Equivalent JSON config:
 	}
 }
 ```
+</details>
+
+<details>
+<summary>Disabling IPv4</summary>
+
+To disable IPv4 lookups and use your unique global unicast IPv6 address, specify only IPv6 as the version you want enabled and use your machine interface to get the IP address:
+
+Caddyfile config:
+
+```
+{
+	dynamic_dns {
+		provider cloudflare {env.CLOUDFLARE_API_TOKEN}
+		domains {
+			example.com
+		}
+		versions ipv6
+		ip_source interface eth0
+	}
+}
+```
+
+Equivalent JSON config; you may omit the other version you want to keep enabled (omission is assumed to mean enabled):
+
+```json
+{
+	"apps": {
+		"dynamic_dns": {
+			"domains": {
+				"example.com": ["@"]
+			},
+			"dns_provider": {
+				"name": "cloudflare",
+				"api_token": "{env.CLOUDFLARE_API_TOKEN}"
+			},
+			"ip_sources": [
+				{
+					"source": "interface",
+					"name": "eth0"
+				}
+			],
+			"versions": {
+				"ipv4": false
+			}
+		}
+	}
+}
+```
+</details>
 
 
-### Disabling IPv6
+<details>
+<summary>Disabling IPv6</summary>
 
 To disable IPv6 lookups, specify only IPv4 as the version you want enabled:
 
@@ -156,8 +210,10 @@ Equivalent JSON config; you may omit the other version you want to keep enabled 
 	}
 }
 ```
+</details>
 
-### Dynamic Domains
+<details>
+<summary>Dynamic Domains</summary>
 
 There is an option `dynamic_domains` that can scan through the configured domains configured in this Caddy instance and will try to manage the DNS of those domains. 
 
@@ -229,5 +285,4 @@ Equivalent JSON config:
 	}
 }
 ```
-
-```
+</details>
