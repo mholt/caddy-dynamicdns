@@ -196,7 +196,7 @@ var defaultHTTPIPServices = []string{
 type UPnP struct {
 	// The UPnP endpoint to query. If empty, the default UPnP
 	// discovery will be used. 
-	Endpoint string `json:"endpoints,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
 
 	logger *zap.Logger
 }
