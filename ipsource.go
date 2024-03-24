@@ -213,8 +213,6 @@ func (u *UPnP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // skip directive name
 	if d.NextArg() {
 		u.Endpoint = d.Val()
-	} else {
-		u.Endpoint = ""
 	}
 	return nil
 }
