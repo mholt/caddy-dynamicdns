@@ -194,6 +194,10 @@ var defaultHTTPIPServices = []string{
 
 // UPnP gets the IP address from UPnP device.
 type UPnP struct {
+	// The UPnP endpoint to query. If empty, the default UPnP
+	// discovery will be used. 
+	Endpoint string `json:"endpoint,omitempty"`
+
 	logger *zap.Logger
 }
 
@@ -206,6 +210,10 @@ func (UPnP) CaddyModule() caddy.ModuleInfo {
 }
 
 func (u *UPnP) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	d.Next() // skip directive name
+	if d.NextArg() {
+		u.Endpoint = d.Val()
+	}
 	return nil
 }
 
@@ -220,7 +228,14 @@ func (u *UPnP) Provision(ctx caddy.Context) error {
 // we can't really choose whether we're looking for IPv4 or IPv6
 // with UPnP, we just get what we get.
 func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
-	d, err := upnp.DiscoverCtx(ctx)
+	var d *upnp.IGD
+	var err error
+	if u.Endpoint != "" {
+		d, err = upnp.Load(u.Endpoint)
+	} else {
+		d, err = upnp.DiscoverCtx(ctx)
+	}
+
 	if err != nil {
 		return nil, err
 	}
