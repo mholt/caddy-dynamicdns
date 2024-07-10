@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"strings"
@@ -54,10 +53,8 @@ type SimpleHTTP struct {
 	// The list of endpoints to query. If empty, a default list will
 	// be used:
 	//
-	// - https://api64.ipify.org
-	// - https://myip.addr.space
-	// - https://ifconfig.me
 	// - https://icanhazip.com
+	// - https://ifconfig.me
 	// - https://ident.me
 	// - https://ipecho.net/plain
 	Endpoints []string `json:"endpoints,omitempty"`
@@ -169,7 +166,7 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 		return nil, fmt.Errorf("%s: server response was: %d %s", endpoint, resp.StatusCode, resp.Status)
 	}
 
-	ipASCII, err := ioutil.ReadAll(io.LimitReader(resp.Body, 256))
+	ipASCII, err := io.ReadAll(io.LimitReader(resp.Body, 256))
 	if err != nil {
 		return nil, err
 	}
@@ -184,10 +181,8 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 }
 
 var defaultHTTPIPServices = []string{
-	"https://api64.ipify.org",
-	"https://myip.addr.space",
-	"https://ifconfig.me",
 	"https://icanhazip.com",
+	"https://ifconfig.me",
 	"https://ident.me",
 	"https://ipecho.net/plain",
 }
