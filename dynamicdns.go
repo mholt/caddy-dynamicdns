@@ -304,6 +304,10 @@ func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) (domainTypeIPs
 				}
 			}
 			for _, n := range names {
+				if n == "*" {
+					a.logger.Debug("skipping DNS record check for wildcard hostname", zap.String("name", n), zap.String("zone", zone))
+					continue
+				}
 				name := libdns.AbsoluteName(n, zone)
 				ips := make(map[string][]net.IP)
 				for _, t := range types {
