@@ -72,7 +72,10 @@ type App struct {
 	TTL caddy.Duration `json:"ttl,omitempty"`
 
 	ipSources   []IPSource
-	dnsProvider libdns.RecordSetter
+	dnsProvider interface {
+		libdns.RecordGetter
+		libdns.RecordSetter
+	}
 
 	ctx    caddy.Context
 	logger *zap.Logger
@@ -99,7 +102,10 @@ func (a *App) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return fmt.Errorf("loading DNS provider module: %v", err)
 	}
-	a.dnsProvider = val.(libdns.RecordSetter)
+	a.dnsProvider = val.(interface {
+		libdns.RecordGetter
+		libdns.RecordSetter
+	})
 
 	// set up the IP source module or use a default
 	if a.IPSourcesRaw != nil {
@@ -219,11 +225,33 @@ func (a App) checkIPAndUpdateDNS() {
 					continue
 				}
 
+				// find the record with recordId
+				recs, err := a.dnsProvider.GetRecords(a.ctx, zone)
+				if err != nil {
+					a.logger.Error("failed to get records", zap.Error(err))
+					continue
+				}
+
+				var record libdns.Record
+				for _, rec := range recs {
+					if rec.Name == domain && rec.Type == recordType(ip) {
+						record = rec
+						break
+					}
+				}
+
+				a.logger.Debug("found record", zap.Any("record", record))
+
+				if record.Name == "" {
+					continue
+				}
+
 				updatedRecsByZone[zone] = append(updatedRecsByZone[zone], libdns.Record{
-					Type:  recordType(ip),
-					Name:  domain,
+					Type:  record.Type,
+					Name:  record.Name,
 					Value: ip.String(),
 					TTL:   time.Duration(a.TTL),
+					ID:    record.ID,
 				})
 			}
 		}
@@ -242,6 +270,7 @@ func (a App) checkIPAndUpdateDNS() {
 				zap.String("name", rec.Name),
 				zap.String("value", rec.Value),
 				zap.Duration("ttl", rec.TTL),
+				zap.String("recordId", rec.ID),
 			)
 		}
 		_, err = a.dnsProvider.SetRecords(a.ctx, zone, records)
