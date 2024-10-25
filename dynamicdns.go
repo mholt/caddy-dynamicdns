@@ -310,7 +310,7 @@ func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) (domainTypeIPs
 					if ip, ok := recMap[name][t]; ok {
 						ips[t] = []net.IP{ip}
 					} else {
-						a.logger.Info("domain not found in DNS", zap.String("domain", name))
+						a.logger.Info("domain not found in DNS", zap.String("domain", name), zap.String("type", t))
 						ips[t] = []net.IP{nilIP}
 					}
 				}
