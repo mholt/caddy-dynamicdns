@@ -20,6 +20,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -166,31 +167,44 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 		return nil, fmt.Errorf("%s: server response was: %d %s", endpoint, resp.StatusCode, resp.Status)
 	}
 
-	ipASCII, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024))
 	if err != nil {
 		return nil, err
 	}
-	ipStr := strings.TrimSpace(string(ipASCII))
 
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return nil, fmt.Errorf("%s: invalid IP address: %s", endpoint, ipStr)
+	re := regexp.MustCompile(`\b((25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\b|([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\b`)
+
+	matches := re.FindAllString(string(body), -1)
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("%s: no valid IP address found in response", endpoint)
 	}
 
-	return ip, nil
+	for i := len(matches) - 1; i >= 0; i-- {
+		ipStr := strings.TrimSpace(matches[i])
+		ip := net.ParseIP(ipStr)
+		if ip != nil {
+			return ip, nil
+		}
+	}
+
+	return nil, fmt.Errorf("%s: no valid IP address found in matches", endpoint)
 }
 
 var defaultHTTPIPServices = []string{
+	"https://www.cloudflare.com/cdn-cgi/trace",
 	"https://icanhazip.com",
 	"https://ifconfig.me",
 	"https://ident.me",
 	"https://ipecho.net/plain",
+	"https://ip.gs",
+	"https://1.0.0.1/cdn-cgi/trace",
+	"https://[2606:4700:4700::1111]/cdn-cgi/trace",
 }
 
 // UPnP gets the IP address from UPnP device.
 type UPnP struct {
 	// The UPnP endpoint to query. If empty, the default UPnP
-	// discovery will be used. 
+	// discovery will be used.
 	Endpoint string `json:"endpoint,omitempty"`
 
 	logger *zap.Logger
@@ -309,7 +323,7 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP
 			foundIPV6 = true
 			continue
 		}
-		if ( foundIPV4 || !versions.V4Enabled() ) && ( foundIPV6 || !versions.V6Enabled() ) {
+		if (foundIPV4 || !versions.V4Enabled()) && (foundIPV6 || !versions.V6Enabled()) {
 			break
 		}
 	}
