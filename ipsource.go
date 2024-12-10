@@ -96,10 +96,10 @@ func (sh *SimpleHTTP) Provision(ctx caddy.Context) error {
 func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
 	out := []net.IP{}
 
-	getForVersion := func(network string, name string) net.IP {
+	getForVersion := func(network, name string, isIPv4 bool) net.IP {
 		client := sh.makeClient(network)
 		for _, endpoint := range sh.Endpoints {
-			ip, err := sh.lookupIP(ctx, client, endpoint)
+			ip, err := sh.lookupIP(ctx, client, endpoint, isIPv4)
 			if err != nil {
 				sh.logger.Debug("lookup failed",
 					zap.String("type", name),
@@ -119,14 +119,14 @@ func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP,
 	}
 
 	if versions.V4Enabled() {
-		ip := getForVersion("tcp4", "IPv4")
+		ip := getForVersion("tcp4", "IPv4", true)
 		if ip != nil {
 			out = append(out, ip)
 		}
 	}
 
 	if versions.V6Enabled() {
-		ip := getForVersion("tcp6", "IPv6")
+		ip := getForVersion("tcp6", "IPv6", false)
 		if ip != nil {
 			out = append(out, ip)
 		}
@@ -151,11 +151,13 @@ func (SimpleHTTP) makeClient(network string) *http.Client {
 	}
 }
 
-func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint string) (net.IP, error) {
+func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint string, isIPv4 bool) (net.IP, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -167,23 +169,36 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 		return nil, fmt.Errorf("%s: server response was: %d %s", endpoint, resp.StatusCode, resp.Status)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 30*1024))
 	if err != nil {
 		return nil, err
 	}
 
-	re := regexp.MustCompile(`\b((25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\b|([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\b`)
-
-	matches := re.FindAllString(string(body), -1)
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("%s: no valid IP address found in response", endpoint)
+	var regex string
+	if isIPv4 {
+		regex = `\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`
+	} else {
+		regex = `\b2[0-9a-fA-F]{3}(?::[0-9a-fA-F]{0,4}){0,7}\b`
 	}
+
+	re := regexp.MustCompile(regex)
+	matches := re.FindAllString(string(body), -1)
 
 	for i := len(matches) - 1; i >= 0; i-- {
 		ipStr := strings.TrimSpace(matches[i])
 		ip := net.ParseIP(ipStr)
-		if ip != nil {
-			return ip, nil
+		if ip == nil {
+			continue
+		}
+
+		if isIPv4 {
+			if ip.To4() != nil && !ip.IsPrivate() && ip.IsGlobalUnicast() {
+				return ip, nil
+			}
+		} else {
+			if ip.To16() != nil && !ip.IsPrivate() && ip.IsGlobalUnicast() {
+				return ip, nil
+			}
 		}
 	}
 
