@@ -178,7 +178,7 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 	if isIPv4 {
 		regex = `\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`
 	} else {
-		regex = `\b2[0-9a-fA-F]{3}(?::[0-9a-fA-F]{0,4}){0,7}\b`
+		regex = `\b2[0-9a-fA-F]{3}:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{0,4}){0,6}\b`
 	}
 
 	re := regexp.MustCompile(regex)
