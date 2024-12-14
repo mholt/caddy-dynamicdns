@@ -21,7 +21,6 @@ import (
 	"net"
 	"net/http"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -178,14 +177,17 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 	if isIPv4 {
 		regex = `\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`
 	} else {
-		regex = `\b2[0-9a-fA-F]{3}:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{0,4}){0,6}\b`
+		regex = `\b2[0-9a-fA-F]{3}(?::[0-9a-fA-F]{0,4}){0,7}\b`
 	}
 
 	re := regexp.MustCompile(regex)
 	matches := re.FindAllString(string(body), -1)
 
-	for i := len(matches) - 1; i >= 0; i-- {
-		ipStr := strings.TrimSpace(matches[i])
+	var selectedIP net.IP
+	var maxIPv6Length int
+
+	for i := 0; i < len(matches); i++ {
+		ipStr := matches[i]
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
 			continue
@@ -193,13 +195,22 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 
 		if isIPv4 {
 			if ip.To4() != nil && !ip.IsPrivate() && ip.IsGlobalUnicast() {
-				return ip, nil
+				selectedIP = ip // Always select the last valid IPv4
 			}
 		} else {
 			if ip.To16() != nil && !ip.IsPrivate() && ip.IsGlobalUnicast() {
-				return ip, nil
+				length := len(ipStr) // Compare IPv6 string length, looking for the longest IPv6
+				if length > maxIPv6Length {
+					selectedIP = ip
+					maxIPv6Length = length
+				} else if length == maxIPv6Length {
+					selectedIP = ip // Select the last IPv6 if lengths are equal
+				}
 			}
 		}
+	}
+	if selectedIP != nil {
+		return selectedIP, nil
 	}
 
 	return nil, fmt.Errorf("%s: no valid IP address found in matches", endpoint)
@@ -212,8 +223,8 @@ var defaultHTTPIPServices = []string{
 	"https://ident.me",
 	"https://ipecho.net/plain",
 	"https://ip.gs",
-	"https://1.0.0.1/cdn-cgi/trace",
 	"https://[2606:4700:4700::1111]/cdn-cgi/trace",
+	"https://1.0.0.1/cdn-cgi/trace",
 }
 
 // UPnP gets the IP address from UPnP device.

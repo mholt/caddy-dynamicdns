@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"net"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -190,14 +189,17 @@ func extractLastValidIP(body []byte, isIPv4 bool) (net.IP, error) {
 	if isIPv4 {
 		regex = `\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`
 	} else {
-		regex = `\b2[0-9a-fA-F]{3}:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{0,4}){0,6}\b`
+		regex = `\b2[0-9a-fA-F]{3}(?::[0-9a-fA-F]{0,4}){0,7}\b`
 	}
 
 	re := regexp.MustCompile(regex)
 	matches := re.FindAllString(string(body), -1)
 
-	for i := len(matches) - 1; i >= 0; i-- {
-		ipStr := strings.TrimSpace(matches[i])
+	var selectedIP net.IP
+	var maxIPv6Length int
+
+	for i := 0; i < len(matches); i++ {
+		ipStr := matches[i]
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
 			continue
@@ -205,13 +207,22 @@ func extractLastValidIP(body []byte, isIPv4 bool) (net.IP, error) {
 
 		if isIPv4 {
 			if ip.To4() != nil && !ip.IsPrivate() && ip.IsGlobalUnicast() {
-				return ip, nil
+				selectedIP = ip // Always select the last valid IPv4
 			}
 		} else {
 			if ip.To16() != nil && !ip.IsPrivate() && ip.IsGlobalUnicast() {
-				return ip, nil
+				length := len(ipStr) // Compare IPv6 string length, looking for the longest IPv6
+				if length > maxIPv6Length {
+					selectedIP = ip
+					maxIPv6Length = length
+				} else if length == maxIPv6Length {
+					selectedIP = ip // Select the last IPv6 if lengths are equal
+				}
 			}
 		}
+	}
+	if selectedIP != nil {
+		return selectedIP, nil
 	}
 	return nil, nil
 }
@@ -317,14 +328,28 @@ func Test_ExtractLastValidIP(t *testing.T) {
 				2001:db8::/48
 				::a2e:0370:7334
 				::zxy::a2e:0370:7334
-				2001::gggg:1234
-				2001::1:2:3:4:5:6
-
 `,
 			want:    nil,
 			wantErr: false,
 		},
-		// mixed case
+		// Compare IPv6 string length case
+		{
+			name:   "IPv6 string length Cases",
+			isIPv4: false,
+			body: `240e::1:2222
+				   2001::gggg:1234
+				   2001::
+				   240e::1:1:122  // Select the last IPv6 if lengths are equal
+				   240e::1:1:123  // Select the last IPv6 if lengths are equal
+				   Gateway: 240e::1:123
+				   240e::1:1:12
+				   2001::gggg:1234
+				   DNS: 240e::1:2  // IPv6 lengths too short
+				`,
+			want:    net.ParseIP("240e::1:1:123"),
+			wantErr: false,
+		},
+		// Mixed IPv4 and IPv6 case
 		{
 			name:   "Mixed IPv4 and IPv6 addresses,want IPv6",
 			isIPv4: false,
