@@ -15,6 +15,8 @@
 package dynamicdns
 
 import (
+	"net"
+
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -35,6 +37,8 @@ func init() {
 //		check_interval <duration>
 //		provider <name> ...
 //		ip_source upnp|simple_http <endpoint>
+//		includes <CIDRs ...>
+//		excludes <CIDRs ...>
 //		update_only
 //		dynamic_domains
 //		versions ipv4|ipv6
@@ -142,6 +146,20 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 				}
 			}
 
+		case "includes":
+			ranges, err := parseRanges(app, d)
+			if err != nil {
+				return nil, err
+			}
+			app.Includes = append(app.Includes, ranges...)
+
+		case "excludes":
+			ranges, err := parseRanges(app, d)
+			if err != nil {
+				return nil, err
+			}
+			app.Excludes = append(app.Excludes, ranges...)
+
 		case "ttl":
 			if !d.NextArg() {
 				return nil, d.ArgErr()
@@ -160,4 +178,21 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 		Name:  "dynamic_dns",
 		Value: caddyconfig.JSON(app, nil),
 	}, nil
+}
+
+// Parse a list of CIDR ranges from the remaining args.
+func parseRanges(app *App, d *caddyfile.Dispenser) ([]*net.IPNet, error) {
+	if app.IPRanges == nil {
+		app.IPRanges = new(IPRanges)
+	}
+	var ranges []*net.IPNet
+	rangeStrings := d.RemainingArgs()
+	for _, rangeString := range rangeStrings {
+		_, net, err := net.ParseCIDR(rangeString)
+		if err != nil {
+			return nil, err
+		}
+		ranges = append(ranges, net)
+	}
+	return ranges, nil
 }
