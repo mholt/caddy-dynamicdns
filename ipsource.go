@@ -38,7 +38,14 @@ func init() {
 
 // IPSource is a type that can get IP addresses.
 type IPSource interface {
-	GetIPs(context.Context, IPVersions) ([]net.IP, error)
+	GetIPs(context.Context, IPSettings) ([]net.IP, error)
+}
+
+// Configuration for enabled IP versions and IP range filtering.
+type IPSettings interface {
+	V4Enabled() bool
+	V6Enabled() bool
+	Contains(net.IP) bool
 }
 
 // SimpleHTTP is an IP source that looks up the public IP addresses by
@@ -92,7 +99,7 @@ func (sh *SimpleHTTP) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public addresses of this machine.
-func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
+func (sh SimpleHTTP) GetIPs(ctx context.Context, settings IPSettings) ([]net.IP, error) {
 	out := []net.IP{}
 
 	getForVersion := func(network string, name string) net.IP {
@@ -117,16 +124,16 @@ func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP,
 		return nil
 	}
 
-	if versions.V4Enabled() {
+	if settings.V4Enabled() {
 		ip := getForVersion("tcp4", "IPv4")
-		if ip != nil {
+		if ip != nil && settings.Contains(ip) {
 			out = append(out, ip)
 		}
 	}
 
-	if versions.V6Enabled() {
+	if settings.V6Enabled() {
 		ip := getForVersion("tcp6", "IPv6")
-		if ip != nil {
+		if ip != nil && settings.Contains(ip) {
 			out = append(out, ip)
 		}
 	}
@@ -190,7 +197,7 @@ var defaultHTTPIPServices = []string{
 // UPnP gets the IP address from UPnP device.
 type UPnP struct {
 	// The UPnP endpoint to query. If empty, the default UPnP
-	// discovery will be used. 
+	// discovery will be used.
 	Endpoint string `json:"endpoint,omitempty"`
 
 	logger *zap.Logger
@@ -219,10 +226,10 @@ func (u *UPnP) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public address(es) of this machine.
-// This implementation ignores the configured IP versions, since
+// This implementation ignores the configured IP settings, since
 // we can't really choose whether we're looking for IPv4 or IPv6
 // with UPnP, we just get what we get.
-func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
+func (u UPnP) GetIPs(ctx context.Context, _ IPSettings) ([]net.IP, error) {
 	var d *upnp.IGD
 	var err error
 	if u.Endpoint != "" {
@@ -282,7 +289,7 @@ func (u *NetInterface) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public address of from the network interface.
-func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
+func (u NetInterface) GetIPs(ctx context.Context, settings IPSettings) ([]net.IP, error) {
 	iface, err := net.InterfaceByName(u.Name)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't find interface '%s': %v", u.Name, err)
@@ -296,20 +303,20 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP
 	foundIPV4, foundIPV6 := false, false
 	for _, addr := range addrs {
 		ipNet, ok := addr.(*net.IPNet)
-		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsPrivate() || !ipNet.IP.IsGlobalUnicast() {
+		if !ok || !settings.Contains(ipNet.IP) {
 			continue
 		}
-		if versions.V4Enabled() && !foundIPV4 && ipNet.IP.To4() != nil {
+		if settings.V4Enabled() && !foundIPV4 && ipNet.IP.To4() != nil {
 			ips = append(ips, ipNet.IP)
 			foundIPV4 = true
 			continue
 		}
-		if versions.V6Enabled() && !foundIPV6 && ipNet.IP.To16() != nil {
+		if settings.V6Enabled() && !foundIPV6 && ipNet.IP.To16() != nil {
 			ips = append(ips, ipNet.IP)
 			foundIPV6 = true
 			continue
 		}
-		if ( foundIPV4 || !versions.V4Enabled() ) && ( foundIPV6 || !versions.V6Enabled() ) {
+		if (foundIPV4 || !settings.V4Enabled()) && (foundIPV6 || !settings.V6Enabled()) {
 			break
 		}
 	}
@@ -337,20 +344,22 @@ func (Static) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (s Static) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
-	if versions.V4Enabled() && versions.V6Enabled() {
+// Configured IP ranges are ignored, it doesn't make much sense to configure a
+// filter against a statically configured list of IPs.
+func (s Static) GetIPs(ctx context.Context, settings IPSettings) ([]net.IP, error) {
+	if settings.V4Enabled() && settings.V6Enabled() {
 		return s.IPs, nil
 	}
 
 	ips := []net.IP{}
 
 	for _, ip := range s.IPs {
-		if versions.V4Enabled() && ip.To4() != nil {
+		if settings.V4Enabled() && ip.To4() != nil {
 			ips = append(ips, ip)
 			continue
 		}
 
-		if versions.V6Enabled() && ip.To16() != nil {
+		if settings.V6Enabled() && ip.To16() != nil {
 			ips = append(ips, ip)
 			continue
 		}
