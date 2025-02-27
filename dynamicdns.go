@@ -423,15 +423,13 @@ type IPRanges struct {
 	Excludes subnets `json:"excludes,omitempty"`
 }
 
-// Contains returns true if the set of include and exclude ranges contains
-// the given IP.
 func (r *IPRanges) Contains(ip net.IP) bool {
 	if r == nil {
 		return !ip.IsPrivate() && ip.IsGlobalUnicast()
 	}
 	includeSize := r.Includes.largestContainingMaskSize(ip)
 	excludeSize := r.Excludes.largestContainingMaskSize(ip)
-	return includeSize >= excludeSize
+	return (includeSize > excludeSize) || (excludeSize == -1 && len(r.Includes) == 0)
 }
 
 // A list of IP ranges.
