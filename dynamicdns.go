@@ -187,10 +187,7 @@ func (a App) checkIPAndUpdateDNS() {
 	// Lookup current address(es) from first successful IP source
 	var currentIPs []netip.Addr
 	for _, ipSrc := range a.ipSources {
-		ipSettings := struct {
-			*IPRanges
-			IPVersions
-		}{a.IPRanges, a.Versions}
+		ipSettings := IPSettings{a.IPRanges, a.Versions}
 		currentIPs, err = ipSrc.GetIPs(a.ctx, ipSettings)
 		if len(currentIPs) == 0 {
 			err = fmt.Errorf("no IP addresses returned")
