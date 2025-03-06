@@ -42,10 +42,9 @@ type IPSource interface {
 }
 
 // Configuration for enabled IP versions and IP range filtering.
-type IPSettings interface {
-	V4Enabled() bool
-	V6Enabled() bool
-	Contains(net.IP) bool
+type IPSettings struct {
+	*IPRanges
+	IPVersions
 }
 
 // SimpleHTTP is an IP source that looks up the public IP addresses by
