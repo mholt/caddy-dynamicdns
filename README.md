@@ -28,6 +28,8 @@ Caddyfile config ([global options](https://caddyserver.com/docs/caddyfile/option
 }
 ```
 
+(For subdmoains, see the next example.)
+
 Equivalent JSON config:
 
 ```json
@@ -81,6 +83,8 @@ Caddyfile config ([global options](https://caddyserver.com/docs/caddyfile/option
 	}
 }
 ```
+
+(Notice how the syntax is: `<zone> [ @ | <subdomains...> ]` -- zone first, then any subdomains; if no subdomains, then "@" is implied; if you do list subdomains and you want the zone root to be included, you have to add "@" explicitly.)
 
 Equivalent JSON config:
 
