@@ -20,7 +20,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
+	"regexp"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -95,10 +95,10 @@ func (sh *SimpleHTTP) Provision(ctx caddy.Context) error {
 func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
 	out := []net.IP{}
 
-	getForVersion := func(network string, name string) net.IP {
+	getForVersion := func(network, name string, isIPv4 bool) net.IP {
 		client := sh.makeClient(network)
 		for _, endpoint := range sh.Endpoints {
-			ip, err := sh.lookupIP(ctx, client, endpoint)
+			ip, err := sh.lookupIP(ctx, client, endpoint, isIPv4)
 			if err != nil {
 				sh.logger.Debug("lookup failed",
 					zap.String("type", name),
@@ -118,14 +118,14 @@ func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP,
 	}
 
 	if versions.V4Enabled() {
-		ip := getForVersion("tcp4", "IPv4")
+		ip := getForVersion("tcp4", "IPv4", true)
 		if ip != nil {
 			out = append(out, ip)
 		}
 	}
 
 	if versions.V6Enabled() {
-		ip := getForVersion("tcp6", "IPv6")
+		ip := getForVersion("tcp6", "IPv6", false)
 		if ip != nil {
 			out = append(out, ip)
 		}
@@ -150,11 +150,13 @@ func (SimpleHTTP) makeClient(network string) *http.Client {
 	}
 }
 
-func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint string) (net.IP, error) {
+func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint string, isIPv4 bool) (net.IP, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -166,31 +168,69 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 		return nil, fmt.Errorf("%s: server response was: %d %s", endpoint, resp.StatusCode, resp.Status)
 	}
 
-	ipASCII, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 30*1024))
 	if err != nil {
 		return nil, err
 	}
-	ipStr := strings.TrimSpace(string(ipASCII))
 
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return nil, fmt.Errorf("%s: invalid IP address: %s", endpoint, ipStr)
+	var regex string
+	if isIPv4 {
+		regex = `\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`
+	} else {
+		regex = `\b2[0-9a-fA-F]{3}(?::[0-9a-fA-F]{0,4}){0,7}\b`
 	}
 
-	return ip, nil
+	re := regexp.MustCompile(regex)
+	matches := re.FindAllString(string(body), -1)
+
+	var selectedIP net.IP
+	var maxIPv6Length int
+
+	for i := 0; i < len(matches); i++ {
+		ipStr := matches[i]
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+
+		if isIPv4 {
+			if ip.To4() != nil && !ip.IsPrivate() && ip.IsGlobalUnicast() {
+				selectedIP = ip // Always select the last valid IPv4
+			}
+		} else {
+			if ip.To16() != nil && !ip.IsPrivate() && ip.IsGlobalUnicast() {
+				length := len(ipStr) // Compare IPv6 string length, looking for the longest IPv6
+				if length > maxIPv6Length {
+					selectedIP = ip
+					maxIPv6Length = length
+				} else if length == maxIPv6Length {
+					selectedIP = ip // Select the last IPv6 if lengths are equal
+				}
+			}
+		}
+	}
+	if selectedIP != nil {
+		return selectedIP, nil
+	}
+
+	return nil, fmt.Errorf("%s: no valid IP address found in matches", endpoint)
 }
 
 var defaultHTTPIPServices = []string{
+	"https://www.cloudflare.com/cdn-cgi/trace",
 	"https://icanhazip.com",
 	"https://ifconfig.me",
 	"https://ident.me",
 	"https://ipecho.net/plain",
+	"https://ip.gs",
+	"https://[2606:4700:4700::1111]/cdn-cgi/trace",
+	"https://1.0.0.1/cdn-cgi/trace",
 }
 
 // UPnP gets the IP address from UPnP device.
 type UPnP struct {
 	// The UPnP endpoint to query. If empty, the default UPnP
-	// discovery will be used. 
+	// discovery will be used.
 	Endpoint string `json:"endpoint,omitempty"`
 
 	logger *zap.Logger
@@ -309,7 +349,7 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP
 			foundIPV6 = true
 			continue
 		}
-		if ( foundIPV4 || !versions.V4Enabled() ) && ( foundIPV6 || !versions.V6Enabled() ) {
+		if (foundIPV4 || !versions.V4Enabled()) && (foundIPV6 || !versions.V6Enabled()) {
 			break
 		}
 	}
