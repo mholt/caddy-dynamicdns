@@ -42,7 +42,7 @@ func init() {
 //	}
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
-func parseApp(d *caddyfile.Dispenser, _ interface{}) (interface{}, error) {
+func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 	app := new(App)
 
 	// consume the option name
