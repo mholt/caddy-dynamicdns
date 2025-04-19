@@ -20,6 +20,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -38,7 +39,7 @@ func init() {
 
 // IPSource is a type that can get IP addresses.
 type IPSource interface {
-	GetIPs(context.Context, IPVersions) ([]net.IP, error)
+	GetIPs(context.Context, IPVersions) ([]netip.Addr, error)
 }
 
 // SimpleHTTP is an IP source that looks up the public IP addresses by
@@ -92,13 +93,14 @@ func (sh *SimpleHTTP) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public addresses of this machine.
-func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
-	out := []net.IP{}
+func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]netip.Addr, error) {
+	out := []netip.Addr{}
 
-	getForVersion := func(network string, name string) net.IP {
+	getForVersion := func(network string, name string) (addr netip.Addr) {
 		client := sh.makeClient(network)
 		for _, endpoint := range sh.Endpoints {
-			ip, err := sh.lookupIP(ctx, client, endpoint)
+			var err error
+			addr, err = sh.lookupIP(ctx, client, endpoint)
 			if err != nil {
 				sh.logger.Debug("lookup failed",
 					zap.String("type", name),
@@ -109,24 +111,24 @@ func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP,
 			sh.logger.Debug("lookup",
 				zap.String("type", name),
 				zap.String("endpoint", endpoint),
-				zap.String("ip", ip.String()))
-			return ip
+				zap.String("ip", addr.String()))
+			return
 		}
 		sh.logger.Warn("no IP found; consider disabling this IP version",
 			zap.String("type", name))
-		return nil
+		return
 	}
 
 	if versions.V4Enabled() {
 		ip := getForVersion("tcp4", "IPv4")
-		if ip != nil {
+		if ip.IsValid() {
 			out = append(out, ip)
 		}
 	}
 
 	if versions.V6Enabled() {
 		ip := getForVersion("tcp6", "IPv6")
-		if ip != nil {
+		if ip.IsValid() {
 			out = append(out, ip)
 		}
 	}
@@ -150,34 +152,34 @@ func (SimpleHTTP) makeClient(network string) *http.Client {
 	}
 }
 
-func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint string) (net.IP, error) {
+func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint string) (netip.Addr, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return netip.Addr{}, err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return netip.Addr{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("%s: server response was: %d %s", endpoint, resp.StatusCode, resp.Status)
+		return netip.Addr{}, fmt.Errorf("%s: server response was: %d %s", endpoint, resp.StatusCode, resp.Status)
 	}
 
 	ipASCII, err := io.ReadAll(io.LimitReader(resp.Body, 256))
 	if err != nil {
-		return nil, err
+		return netip.Addr{}, err
 	}
 	ipStr := strings.TrimSpace(string(ipASCII))
 
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return nil, fmt.Errorf("%s: invalid IP address: %s", endpoint, ipStr)
+	addr, err := netip.ParseAddr(ipStr)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("%s: invalid IP address '%s': %w", endpoint, ipStr, err)
 	}
 
-	return ip, nil
+	return addr, nil
 }
 
 var defaultHTTPIPServices = []string{
@@ -190,7 +192,7 @@ var defaultHTTPIPServices = []string{
 // UPnP gets the IP address from UPnP device.
 type UPnP struct {
 	// The UPnP endpoint to query. If empty, the default UPnP
-	// discovery will be used. 
+	// discovery will be used.
 	Endpoint string `json:"endpoint,omitempty"`
 
 	logger *zap.Logger
@@ -222,7 +224,7 @@ func (u *UPnP) Provision(ctx caddy.Context) error {
 // This implementation ignores the configured IP versions, since
 // we can't really choose whether we're looking for IPv4 or IPv6
 // with UPnP, we just get what we get.
-func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
+func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]netip.Addr, error) {
 	var d *upnp.IGD
 	var err error
 	if u.Endpoint != "" {
@@ -240,14 +242,14 @@ func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]net.IP, error) {
 		return nil, err
 	}
 
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return nil, fmt.Errorf("invalid IP: %s", ipStr)
+	addr, err := netip.ParseAddr(ipStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid IP '%s': %w", ipStr, err)
 	}
 	u.logger.Debug("lookup",
-		zap.String("ip", ip.String()))
+		zap.String("ip", addr.String()))
 
-	return []net.IP{ip}, nil
+	return []netip.Addr{addr}, nil
 }
 
 // NetInterface gets the public IP address(es) (at most 1 IPv4 and 1 IPv6) from a network interface by name.
@@ -282,7 +284,7 @@ func (u *NetInterface) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public address of from the network interface.
-func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
+func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]netip.Addr, error) {
 	iface, err := net.InterfaceByName(u.Name)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't find interface '%s': %v", u.Name, err)
@@ -292,24 +294,33 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP
 		return nil, fmt.Errorf("couldn't load addresses for interface '%s': %v", u.Name, err)
 	}
 
-	ips := []net.IP{}
+	ips := []netip.Addr{}
 	foundIPV4, foundIPV6 := false, false
 	for _, addr := range addrs {
 		ipNet, ok := addr.(*net.IPNet)
-		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsPrivate() || !ipNet.IP.IsGlobalUnicast() {
+		if !ok {
 			continue
 		}
-		if versions.V4Enabled() && !foundIPV4 && ipNet.IP.To4() != nil {
-			ips = append(ips, ipNet.IP)
+		prefix := ipnetToPrefix(ipNet)
+		if !prefix.IsValid() {
+			continue
+		}
+
+		addr := prefix.Addr()
+		if addr.IsLoopback() || addr.IsPrivate() || addr.IsGlobalUnicast() {
+			continue
+		}
+		if versions.V4Enabled() && !foundIPV4 && addr.Is4() {
+			ips = append(ips, addr)
 			foundIPV4 = true
 			continue
 		}
-		if versions.V6Enabled() && !foundIPV6 && ipNet.IP.To16() != nil {
-			ips = append(ips, ipNet.IP)
+		if versions.V6Enabled() && !foundIPV6 && addr.Is6() {
+			ips = append(ips, addr)
 			foundIPV6 = true
 			continue
 		}
-		if ( foundIPV4 || !versions.V4Enabled() ) && ( foundIPV6 || !versions.V6Enabled() ) {
+		if (foundIPV4 || !versions.V4Enabled()) && (foundIPV6 || !versions.V6Enabled()) {
 			break
 		}
 	}
@@ -325,7 +336,7 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP
 }
 
 type Static struct {
-	IPs []net.IP `json:"ips,omitempty"`
+	IPs []netip.Addr `json:"ips,omitempty"`
 
 	logger *zap.Logger
 }
@@ -337,20 +348,19 @@ func (Static) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (s Static) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
+func (s Static) GetIPs(ctx context.Context, versions IPVersions) ([]netip.Addr, error) {
 	if versions.V4Enabled() && versions.V6Enabled() {
 		return s.IPs, nil
 	}
 
-	ips := []net.IP{}
-
+	ips := []netip.Addr{}
 	for _, ip := range s.IPs {
-		if versions.V4Enabled() && ip.To4() != nil {
+		if versions.V4Enabled() && ip.Is4() {
 			ips = append(ips, ip)
 			continue
 		}
 
-		if versions.V6Enabled() && ip.To16() != nil {
+		if versions.V6Enabled() && ip.Is6() {
 			ips = append(ips, ip)
 			continue
 		}
@@ -371,19 +381,25 @@ func (s *Static) Provision(ctx caddy.Context) error {
 
 func (s *Static) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // skip directive name
-
 	for d.NextArg() {
-		raw_ip := d.Val()
-		ip := net.ParseIP(raw_ip)
-
-		if ip == nil {
-			return d.Errf("Invalid IP address: %v", raw_ip)
+		raw := d.Val()
+		addr, err := netip.ParseAddr(raw)
+		if err != nil {
+			return d.Errf("Invalid IP address '%s': %w", raw, err)
 		}
-
-		s.IPs = append(s.IPs, ip)
+		s.IPs = append(s.IPs, addr)
 	}
-
 	return nil
+}
+
+// ipnetToPrefix converts a [net.IPNet] to a [netip.Prefix].
+func ipnetToPrefix(ipNet *net.IPNet) netip.Prefix {
+	addr, ok := netip.AddrFromSlice(ipNet.IP)
+	if !ok {
+		return netip.Prefix{}
+	}
+	prefixSize, _ := ipNet.Mask.Size()
+	return netip.PrefixFrom(addr, prefixSize)
 }
 
 // Interface guards
