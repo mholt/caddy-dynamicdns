@@ -307,7 +307,7 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]netip.
 		}
 
 		addr := prefix.Addr()
-		if addr.IsLoopback() || addr.IsPrivate() || addr.IsGlobalUnicast() {
+		if addr.IsLoopback() || addr.IsPrivate() || !addr.IsGlobalUnicast() {
 			continue
 		}
 		if versions.V4Enabled() && !foundIPV4 && addr.Is4() {
