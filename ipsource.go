@@ -44,7 +44,7 @@ type IPSource interface {
 
 // Configuration for enabled IP versions and IP range filtering.
 type IPSettings struct {
-	*IPRanges
+	IPRanges
 	IPVersions
 }
 
@@ -311,16 +311,10 @@ func (u NetInterface) GetIPs(ctx context.Context, settings IPSettings) ([]netip.
 		if !prefix.IsValid() {
 			continue
 		}
-
 		addr := prefix.Addr()
-		if addr.IsLoopback() || addr.IsPrivate() || !addr.IsGlobalUnicast() {
-			continue
-		}
-
 		if !settings.Contains(addr) {
 			continue
 		}
-
 		if settings.V4Enabled() && !foundIPV4 && addr.Is4() {
 			ips = append(ips, addr)
 			foundIPV4 = true

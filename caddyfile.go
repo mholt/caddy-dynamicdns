@@ -147,14 +147,14 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 			}
 
 		case "includes":
-			ranges, err := parseRanges(app, d)
+			ranges, err := parseRanges(d)
 			if err != nil {
 				return nil, err
 			}
 			app.Includes = append(app.Includes, ranges...)
 
 		case "excludes":
-			ranges, err := parseRanges(app, d)
+			ranges, err := parseRanges(d)
 			if err != nil {
 				return nil, err
 			}
@@ -181,10 +181,7 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 }
 
 // Parse a list of CIDR ranges from the remaining args.
-func parseRanges(app *App, d *caddyfile.Dispenser) ([]netip.Prefix, error) {
-	if app.IPRanges == nil {
-		app.IPRanges = new(IPRanges)
-	}
+func parseRanges(d *caddyfile.Dispenser) ([]netip.Prefix, error) {
 	var ranges []netip.Prefix
 	rangeStrings := d.RemainingArgs()
 	for _, rangeString := range rangeStrings {

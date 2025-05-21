@@ -66,7 +66,7 @@ type App struct {
 	Versions IPVersions `json:"versions,omitempty"`
 
 	// The IP ranges to include and exclude
-	*IPRanges `json:",omitempty"`
+	IPRanges `json:",omitzero"`
 
 	// How frequently to check the public IP address. Default: 30m
 	CheckInterval caddy.Duration `json:"check_interval,omitempty"`
