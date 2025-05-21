@@ -419,11 +419,11 @@ func ipListContains(list []netip.Addr, ip netip.Addr) bool {
 // If no ranges are configured then the default behaviour is to include
 // global unicast ranges and exclude private ranges.
 type IPRanges struct {
-	Includes subnets `json:"includes,omitempty"`
-	Excludes subnets `json:"excludes,omitempty"`
+	Includes Subnets `json:"includes,omitempty"`
+	Excludes Subnets `json:"excludes,omitempty"`
 }
 
-func (r *IPRanges) Contains(ip net.IP) bool {
+func (r *IPRanges) Contains(ip netip.Addr) bool {
 	if r == nil {
 		return !ip.IsPrivate() && ip.IsGlobalUnicast()
 	}
@@ -433,13 +433,13 @@ func (r *IPRanges) Contains(ip net.IP) bool {
 }
 
 // A list of IP ranges.
-type subnets []*net.IPNet
+type Subnets []netip.Prefix
 
 // Get the size of the subnet with the largest mask which contains the IP.
-func (r subnets) largestContainingMaskSize(ip net.IP) int {
+func (r Subnets) largestContainingMaskSize(ip netip.Addr) int {
 	matchSize := -1
 	for _, subet := range r {
-		size, _ := subet.Mask.Size()
+		size := subet.Bits()
 		if size >= matchSize && subet.Contains(ip) {
 			matchSize = size
 		}
@@ -448,22 +448,22 @@ func (r subnets) largestContainingMaskSize(ip net.IP) int {
 }
 
 // Unmarshal from a list of CIDR strings.
-func (r *subnets) UnmarshalJSON(data []byte) error {
+func (r *Subnets) UnmarshalJSON(data []byte) error {
 	var cidrRanges []string
 	json.Unmarshal(data, &cidrRanges)
 
 	for _, cidrRange := range cidrRanges {
-		_, net, err := net.ParseCIDR(cidrRange)
+		prefix, err := netip.ParsePrefix(cidrRange)
 		if err != nil {
 			return err
 		}
-		*r = append(*r, net)
+		*r = append(*r, prefix)
 	}
 	return nil
 }
 
 // Marshal to a list of CIDR strings.
-func (r *subnets) MarshalJSON() ([]byte, error) {
+func (r *Subnets) MarshalJSON() ([]byte, error) {
 	var strings []string
 	for _, ipRange := range *r {
 		strings = append(strings, ipRange.String())

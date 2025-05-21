@@ -15,7 +15,7 @@
 package dynamicdns
 
 import (
-	"net"
+	"net/netip"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
@@ -181,14 +181,14 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 }
 
 // Parse a list of CIDR ranges from the remaining args.
-func parseRanges(app *App, d *caddyfile.Dispenser) ([]*net.IPNet, error) {
+func parseRanges(app *App, d *caddyfile.Dispenser) ([]netip.Prefix, error) {
 	if app.IPRanges == nil {
 		app.IPRanges = new(IPRanges)
 	}
-	var ranges []*net.IPNet
+	var ranges []netip.Prefix
 	rangeStrings := d.RemainingArgs()
 	for _, rangeString := range rangeStrings {
-		_, net, err := net.ParseCIDR(rangeString)
+		net, err := netip.ParsePrefix(rangeString)
 		if err != nil {
 			return nil, err
 		}
