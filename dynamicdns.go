@@ -416,17 +416,17 @@ func ipListContains(list []netip.Addr, ip netip.Addr) bool {
 // If no ranges are configured then the default behaviour is to include
 // global unicast ranges and exclude private ranges.
 type IPRanges struct {
-	Includes Subnets `json:"includes,omitempty"`
-	Excludes Subnets `json:"excludes,omitempty"`
+	Include Subnets `json:"include,omitempty"`
+	Exclude Subnets `json:"exclude,omitempty"`
 }
 
 func (r *IPRanges) Contains(ip netip.Addr) bool {
 	if r == nil {
 		return !ip.IsPrivate() && ip.IsGlobalUnicast()
 	}
-	includeSize := r.Includes.largestContainingMaskSize(ip)
-	excludeSize := r.Excludes.largestContainingMaskSize(ip)
-	return (includeSize > excludeSize) || (excludeSize == -1 && len(r.Includes) == 0)
+	includeSize := r.Include.largestContainingMaskSize(ip)
+	excludeSize := r.Exclude.largestContainingMaskSize(ip)
+	return (includeSize > excludeSize) || (excludeSize == -1 && len(r.Include) == 0)
 }
 
 // A list of IP ranges.

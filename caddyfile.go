@@ -37,8 +37,8 @@ func init() {
 //		check_interval <duration>
 //		provider <name> ...
 //		ip_source upnp|simple_http <endpoint>
-//		includes <CIDRs ...>
-//		excludes <CIDRs ...>
+//		include <CIDRs ...>
+//		exclude <CIDRs ...>
 //		update_only
 //		dynamic_domains
 //		versions ipv4|ipv6
@@ -146,19 +146,19 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 				}
 			}
 
-		case "includes":
+		case "include":
 			ranges, err := parseRanges(d)
 			if err != nil {
 				return nil, err
 			}
-			app.Includes = append(app.Includes, ranges...)
+			app.Include = append(app.Include, ranges...)
 
-		case "excludes":
+		case "exclude":
 			ranges, err := parseRanges(d)
 			if err != nil {
 				return nil, err
 			}
-			app.Excludes = append(app.Excludes, ranges...)
+			app.Exclude = append(app.Exclude, ranges...)
 
 		case "ttl":
 			if !d.NextArg() {
