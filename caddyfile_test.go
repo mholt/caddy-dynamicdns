@@ -139,7 +139,7 @@ func Test_ParseApp(t *testing.T) {
 					}
 				}
 			`),
-			want: ` {
+			want: `{
 				"domains": {
 					"example": [
 						"@",
@@ -151,6 +151,60 @@ func Test_ParseApp(t *testing.T) {
 				},
 				"versions": {}
  			}`,
+		},
+		{
+			name: "ip ranges",
+			d: caddyfile.NewTestDispenser(`
+				dynamic_dns {
+					include "192.168.0.0/16" "2001:0db8:85a3::/48"
+					exclude "192.168.10.0/24" "2001:0db8:85a3:1234::/64"
+				}
+			`),
+			want: `{
+				"include": [
+					"192.168.0.0/16",
+					"2001:db8:85a3::/48"
+				],
+				"exclude": [
+					"192.168.10.0/24",
+					"2001:db8:85a3:1234::/64"
+				],
+				"versions": {}
+			}`,
+		},
+		{
+			name: "ip ranges: include",
+			d: caddyfile.NewTestDispenser(`
+				dynamic_dns {
+					include "192.168.0.0/16"
+				}
+			`),
+			want: `{
+				"include": [ "192.168.0.0/16" ],
+				"versions": {}
+			}`,
+		},
+		{
+			name: "ip ranges: exclude",
+			d: caddyfile.NewTestDispenser(`
+				dynamic_dns {
+					exclude "192.168.0.0/16"
+				}
+			`),
+			want: `{
+				"exclude": [ "192.168.0.0/16" ],
+				"versions": {}
+			}`,
+		},
+		{
+			name: "ip ranges: invalid range",
+			d: caddyfile.NewTestDispenser(`
+				dynamic_dns {
+					include "192.168.10.0/100",
+					"versions": {}
+				}
+			`),
+			wantErr: true,
 		},
 	}
 	for _, tt := range tests {

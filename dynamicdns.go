@@ -65,6 +65,9 @@ type App struct {
 	// To disable IPv6, specify {"ipv6": false}.
 	Versions IPVersions `json:"versions,omitempty"`
 
+	// The IP ranges to include and exclude
+	IPRanges `json:",omitzero"`
+
 	// How frequently to check the public IP address. Default: 30m
 	CheckInterval caddy.Duration `json:"check_interval,omitempty"`
 
@@ -184,7 +187,8 @@ func (a App) checkIPAndUpdateDNS() {
 	// Lookup current address(es) from first successful IP source
 	var currentIPs []netip.Addr
 	for _, ipSrc := range a.ipSources {
-		currentIPs, err = ipSrc.GetIPs(a.ctx, a.Versions)
+		ipSettings := IPSettings{a.IPRanges, a.Versions}
+		currentIPs, err = ipSrc.GetIPs(a.ctx, ipSettings)
 		if len(currentIPs) == 0 {
 			err = fmt.Errorf("no IP addresses returned")
 		}
@@ -405,6 +409,63 @@ func ipListContains(list []netip.Addr, ip netip.Addr) bool {
 		}
 	}
 	return false
+}
+
+// IPRanges is the set of IP ranges to include and exclude for dynamic
+// DNS, where the most specific match "wins".
+// If no ranges are configured then the default behaviour is to include
+// global unicast ranges and exclude private ranges.
+type IPRanges struct {
+	Include Subnets `json:"include,omitempty"`
+	Exclude Subnets `json:"exclude,omitempty"`
+}
+
+func (r *IPRanges) Contains(ip netip.Addr) bool {
+	if r == nil {
+		return !ip.IsPrivate() && ip.IsGlobalUnicast()
+	}
+	includeSize := r.Include.largestContainingMaskSize(ip)
+	excludeSize := r.Exclude.largestContainingMaskSize(ip)
+	return (includeSize > excludeSize) || (excludeSize == -1 && len(r.Include) == 0)
+}
+
+// A list of IP ranges.
+type Subnets []netip.Prefix
+
+// Get the size of the subnet with the largest mask which contains the IP.
+func (r Subnets) largestContainingMaskSize(ip netip.Addr) int {
+	matchSize := -1
+	for _, subet := range r {
+		size := subet.Bits()
+		if size >= matchSize && subet.Contains(ip) {
+			matchSize = size
+		}
+	}
+	return matchSize
+}
+
+// Unmarshal from a list of CIDR strings.
+func (r *Subnets) UnmarshalJSON(data []byte) error {
+	var cidrRanges []string
+	json.Unmarshal(data, &cidrRanges)
+
+	for _, cidrRange := range cidrRanges {
+		prefix, err := netip.ParsePrefix(cidrRange)
+		if err != nil {
+			return err
+		}
+		*r = append(*r, prefix)
+	}
+	return nil
+}
+
+// Marshal to a list of CIDR strings.
+func (r *Subnets) MarshalJSON() ([]byte, error) {
+	var strings []string
+	for _, ipRange := range *r {
+		strings = append(strings, ipRange.String())
+	}
+	return json.Marshal(strings)
 }
 
 // IPVersions is the IP versions to enable for dynamic DNS.

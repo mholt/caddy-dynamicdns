@@ -39,7 +39,13 @@ func init() {
 
 // IPSource is a type that can get IP addresses.
 type IPSource interface {
-	GetIPs(context.Context, IPVersions) ([]netip.Addr, error)
+	GetIPs(context.Context, IPSettings) ([]netip.Addr, error)
+}
+
+// Configuration for enabled IP versions and IP range filtering.
+type IPSettings struct {
+	IPRanges
+	IPVersions
 }
 
 // SimpleHTTP is an IP source that looks up the public IP addresses by
@@ -93,7 +99,7 @@ func (sh *SimpleHTTP) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public addresses of this machine.
-func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]netip.Addr, error) {
+func (sh SimpleHTTP) GetIPs(ctx context.Context, settings IPSettings) ([]netip.Addr, error) {
 	out := []netip.Addr{}
 
 	getForVersion := func(network string, name string) (addr netip.Addr) {
@@ -119,16 +125,16 @@ func (sh SimpleHTTP) GetIPs(ctx context.Context, versions IPVersions) ([]netip.A
 		return
 	}
 
-	if versions.V4Enabled() {
+	if settings.V4Enabled() {
 		ip := getForVersion("tcp4", "IPv4")
-		if ip.IsValid() {
+		if ip.IsValid() && settings.Contains(ip) {
 			out = append(out, ip)
 		}
 	}
 
-	if versions.V6Enabled() {
+	if settings.V6Enabled() {
 		ip := getForVersion("tcp6", "IPv6")
-		if ip.IsValid() {
+		if ip.IsValid() && settings.Contains(ip) {
 			out = append(out, ip)
 		}
 	}
@@ -221,10 +227,10 @@ func (u *UPnP) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public address(es) of this machine.
-// This implementation ignores the configured IP versions, since
+// This implementation ignores the configured IP settings, since
 // we can't really choose whether we're looking for IPv4 or IPv6
 // with UPnP, we just get what we get.
-func (u UPnP) GetIPs(ctx context.Context, _ IPVersions) ([]netip.Addr, error) {
+func (u UPnP) GetIPs(ctx context.Context, _ IPSettings) ([]netip.Addr, error) {
 	var d *upnp.IGD
 	var err error
 	if u.Endpoint != "" {
@@ -284,7 +290,7 @@ func (u *NetInterface) Provision(ctx caddy.Context) error {
 }
 
 // GetIPs gets the public address of from the network interface.
-func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]netip.Addr, error) {
+func (u NetInterface) GetIPs(ctx context.Context, settings IPSettings) ([]netip.Addr, error) {
 	iface, err := net.InterfaceByName(u.Name)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't find interface '%s': %v", u.Name, err)
@@ -305,22 +311,21 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]netip.
 		if !prefix.IsValid() {
 			continue
 		}
-
 		addr := prefix.Addr()
-		if addr.IsLoopback() || addr.IsPrivate() || !addr.IsGlobalUnicast() {
+		if !settings.Contains(addr) {
 			continue
 		}
-		if versions.V4Enabled() && !foundIPV4 && addr.Is4() {
+		if settings.V4Enabled() && !foundIPV4 && addr.Is4() {
 			ips = append(ips, addr)
 			foundIPV4 = true
 			continue
 		}
-		if versions.V6Enabled() && !foundIPV6 && addr.Is6() {
+		if settings.V6Enabled() && !foundIPV6 && addr.Is6() {
 			ips = append(ips, addr)
 			foundIPV6 = true
 			continue
 		}
-		if (foundIPV4 || !versions.V4Enabled()) && (foundIPV6 || !versions.V6Enabled()) {
+		if (foundIPV4 || !settings.V4Enabled()) && (foundIPV6 || !settings.V6Enabled()) {
 			break
 		}
 	}
@@ -348,19 +353,19 @@ func (Static) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (s Static) GetIPs(ctx context.Context, versions IPVersions) ([]netip.Addr, error) {
-	if versions.V4Enabled() && versions.V6Enabled() {
+func (s Static) GetIPs(ctx context.Context, settings IPSettings) ([]netip.Addr, error) {
+	if settings.V4Enabled() && settings.V6Enabled() {
 		return s.IPs, nil
 	}
 
 	ips := []netip.Addr{}
 	for _, ip := range s.IPs {
-		if versions.V4Enabled() && ip.Is4() {
+		if settings.V4Enabled() && ip.Is4() {
 			ips = append(ips, ip)
 			continue
 		}
 
-		if versions.V6Enabled() && ip.Is6() {
+		if settings.V6Enabled() && ip.Is6() {
 			ips = append(ips, ip)
 			continue
 		}
