@@ -22,7 +22,7 @@ Caddyfile config ([global options](https://caddyserver.com/docs/caddyfile/option
 	dynamic_dns {
 		provider cloudflare {env.CLOUDFLARE_API_TOKEN}
 		domains {
-			example.com
+			example.com @
 		}
 	}
 }
@@ -138,7 +138,7 @@ Caddyfile config:
 	dynamic_dns {
 		provider cloudflare {env.CLOUDFLARE_API_TOKEN}
 		domains {
-			example.com
+			example.com @
 		}
 		versions ipv6
 		ip_source interface eth0
@@ -187,7 +187,7 @@ Caddyfile config:
 	dynamic_dns {
 		provider cloudflare {env.CLOUDFLARE_API_TOKEN}
 		domains {
-			example.com
+			example.com @
 		}
 		versions ipv4
 	}
