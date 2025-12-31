@@ -150,7 +150,36 @@ func (a App) checkerLoop() {
 	ticker := time.NewTicker(time.Duration(a.CheckInterval))
 	defer ticker.Stop()
 
-	a.checkIPAndUpdateDNS()
+	// Initial check with retry on failure (e.g., network not ready on boot)
+	const (
+		initialBackoff = 5 * time.Second
+		maxBackoff     = 5 * time.Minute
+	)
+	backoff := initialBackoff
+
+initLoop:
+	for {
+		if err := a.checkIPAndUpdateDNS(); err == nil {
+			break initLoop
+		} else {
+			a.logger.Warn("initial IP lookup failed, will retry",
+				zap.Duration("in", backoff),
+				zap.Error(err))
+		}
+
+		select {
+		case <-time.After(backoff):
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		case <-ticker.C:
+			// Regular interval hit during retry - reset backoff and try immediately
+			backoff = initialBackoff
+		case <-a.ctx.Done():
+			return
+		}
+	}
 
 	for {
 		select {
@@ -164,7 +193,8 @@ func (a App) checkerLoop() {
 
 // checkIPAndUpdateDNS checks public IP addresses and, for any IP addresses
 // that are different from before, it updates DNS records accordingly.
-func (a App) checkIPAndUpdateDNS() {
+// It returns an error if all IP sources fail.
+func (a App) checkIPAndUpdateDNS() error {
 	a.logger.Debug("beginning IP address check")
 
 	lastIPsMu.Lock()
@@ -200,6 +230,11 @@ func (a App) checkIPAndUpdateDNS() {
 			zap.Error(err))
 	}
 
+	// If all IP sources failed, return the error so caller can retry
+	if len(currentIPs) == 0 && err != nil {
+		return fmt.Errorf("all IP sources failed: %w", err)
+	}
+
 	// make sure the source returns tidy info; duplicates are wasteful
 	currentIPs = removeDuplicateIPs(currentIPs)
 
@@ -233,7 +268,7 @@ func (a App) checkIPAndUpdateDNS() {
 
 	if len(updatedRecsByZone) == 0 {
 		a.logger.Debug("no IP address change; no update needed")
-		return
+		return nil
 	}
 
 	for zone, addresses := range updatedRecsByZone {
@@ -272,6 +307,8 @@ func (a App) checkIPAndUpdateDNS() {
 	}
 	a.logger.Info("finished updating DNS",
 		zap.Strings("current_ips", currentIPStrings))
+
+	return nil
 }
 
 // lookupCurrentIPsFromDNS looks up the current IP addresses
