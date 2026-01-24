@@ -41,6 +41,7 @@ func init() {
 //		exclude <CIDRs ...>
 //		update_only
 //		dynamic_domains
+//		delete_orphans
 //		versions ipv4|ipv6
 //		ttl <duration>
 //	}
@@ -81,6 +82,12 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 				return nil, d.ArgErr()
 			}
 			app.DynamicDomains = true
+
+		case "delete_orphans":
+			if d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			app.DeleteOrphans = true
 
 		case "check_interval":
 			if !d.NextArg() {
