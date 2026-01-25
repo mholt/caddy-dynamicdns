@@ -301,6 +301,11 @@ Note:
 * The DNS provider must implement the `libdns.RecordDeleter` interface.
 * State is persisted to Caddy's storage (works with any storage provider) so orphans are detected even after Caddy restarts.
 
+Limitations:
+* **Zone removal**: If you remove an entire zone from the `domains` block, orphans in that zone cannot be deleted (keep at least one domain per zone to enable cleanup).
+* **Version changes**: Changing `versions` (e.g., from `ipv4 ipv6` to `ipv4`) won't clean up records of the disabled type.
+* **Multiple instances**: Running multiple Caddy instances with `delete_orphans` sharing the same storage may cause state conflicts.
+
 Caddyfile config:
 
 ```
