@@ -1,0 +1,341 @@
+// Copyright 2026 Nils Stein
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package dynamicdns
+
+import (
+	"context"
+	"encoding/json"
+	"net/netip"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/caddyserver/certmagic"
+	"go.uber.org/zap"
+)
+
+// mockStorage implements certmagic.Storage for testing
+type mockStorage struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func newMockStorage() *mockStorage {
+	return &mockStorage{
+		data: make(map[string][]byte),
+	}
+}
+
+func (m *mockStorage) Lock(ctx context.Context, key string) error {
+	return nil
+}
+
+func (m *mockStorage) Unlock(ctx context.Context, key string) error {
+	return nil
+}
+
+func (m *mockStorage) Store(ctx context.Context, key string, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data[key] = value
+	return nil
+}
+
+func (m *mockStorage) Load(ctx context.Context, key string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if data, ok := m.data[key]; ok {
+		return data, nil
+	}
+	return nil, &mockNotExistError{key: key}
+}
+
+func (m *mockStorage) Delete(ctx context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, key)
+	return nil
+}
+
+func (m *mockStorage) Exists(ctx context.Context, key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.data[key]
+	return ok
+}
+
+func (m *mockStorage) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockStorage) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
+	return certmagic.KeyInfo{}, nil
+}
+
+type mockNotExistError struct {
+	key string
+}
+
+func (e *mockNotExistError) Error() string {
+	return "key not found: " + e.key
+}
+
+func TestSaveManagedDomainsState(t *testing.T) {
+	storage := newMockStorage()
+	logger := zap.NewNop()
+	ctx := context.Background()
+
+	domains := make(domainTypeIPs)
+	domains["example.com."] = map[string][]netip.Addr{
+		"A":    {netip.MustParseAddr("192.0.2.1")},
+		"AAAA": {netip.MustParseAddr("2001:db8::1")},
+	}
+	domains["sub.example.com."] = map[string][]netip.Addr{
+		"A": {netip.MustParseAddr("192.0.2.2")},
+	}
+
+	saveManagedDomainsState(ctx, storage, domains, logger)
+
+	// Verify data was stored
+	if !storage.Exists(ctx, managedDomainsStorageKey) {
+		t.Fatal("expected state to be stored")
+	}
+
+	// Verify the stored JSON structure
+	data, err := storage.Load(ctx, managedDomainsStorageKey)
+	if err != nil {
+		t.Fatalf("failed to load stored data: %v", err)
+	}
+
+	var state managedDomainsState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("failed to unmarshal stored data: %v", err)
+	}
+
+	// Check timestamp is recent
+	if time.Since(state.LastUpdated) > time.Minute {
+		t.Errorf("LastUpdated timestamp is too old: %v", state.LastUpdated)
+	}
+
+	// Check domains
+	if len(state.Domains) != 2 {
+		t.Errorf("expected 2 domains, got %d", len(state.Domains))
+	}
+
+	if ips, ok := state.Domains["example.com."]; !ok {
+		t.Error("expected example.com. in domains")
+	} else {
+		if len(ips["A"]) != 1 || ips["A"][0] != "192.0.2.1" {
+			t.Errorf("unexpected A record for example.com.: %v", ips["A"])
+		}
+		if len(ips["AAAA"]) != 1 || ips["AAAA"][0] != "2001:db8::1" {
+			t.Errorf("unexpected AAAA record for example.com.: %v", ips["AAAA"])
+		}
+	}
+}
+
+func TestSaveManagedDomainsState_NilDomains(t *testing.T) {
+	storage := newMockStorage()
+	logger := zap.NewNop()
+	ctx := context.Background()
+
+	// Should not panic or store anything with nil domains
+	saveManagedDomainsState(ctx, storage, nil, logger)
+
+	if storage.Exists(ctx, managedDomainsStorageKey) {
+		t.Error("expected no state to be stored for nil domains")
+	}
+}
+
+func TestSaveManagedDomainsState_SkipsInvalidIPs(t *testing.T) {
+	storage := newMockStorage()
+	logger := zap.NewNop()
+	ctx := context.Background()
+
+	domains := make(domainTypeIPs)
+	domains["example.com."] = map[string][]netip.Addr{
+		"A": {
+			netip.MustParseAddr("192.0.2.1"),
+			netip.Addr{}, // Invalid/zero IP
+		},
+	}
+
+	saveManagedDomainsState(ctx, storage, domains, logger)
+
+	data, _ := storage.Load(ctx, managedDomainsStorageKey)
+	var state managedDomainsState
+	json.Unmarshal(data, &state)
+
+	// Should only have the valid IP
+	if len(state.Domains["example.com."]["A"]) != 1 {
+		t.Errorf("expected 1 IP (invalid filtered), got %d", len(state.Domains["example.com."]["A"]))
+	}
+}
+
+func TestLoadManagedDomainsState(t *testing.T) {
+	storage := newMockStorage()
+	logger := zap.NewNop()
+	ctx := context.Background()
+
+	// Pre-populate storage with test data
+	state := managedDomainsState{
+		LastUpdated: time.Now().UTC(),
+		Domains: map[string]map[string][]string{
+			"example.com.": {
+				"A":    {"192.0.2.1"},
+				"AAAA": {"2001:db8::1"},
+			},
+			"sub.example.com.": {
+				"A": {"192.0.2.2"},
+			},
+		},
+	}
+	data, _ := json.Marshal(state)
+	storage.Store(ctx, managedDomainsStorageKey, data)
+
+	// Load and verify
+	result := loadManagedDomainsState(ctx, storage, logger)
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 domains, got %d", len(result))
+	}
+
+	// Verify example.com
+	if ips, ok := result["example.com."]; !ok {
+		t.Error("expected example.com. in result")
+	} else {
+		if len(ips["A"]) != 1 || ips["A"][0] != netip.MustParseAddr("192.0.2.1") {
+			t.Errorf("unexpected A record: %v", ips["A"])
+		}
+		if len(ips["AAAA"]) != 1 || ips["AAAA"][0] != netip.MustParseAddr("2001:db8::1") {
+			t.Errorf("unexpected AAAA record: %v", ips["AAAA"])
+		}
+	}
+
+	// Verify sub.example.com
+	if ips, ok := result["sub.example.com."]; !ok {
+		t.Error("expected sub.example.com. in result")
+	} else {
+		if len(ips["A"]) != 1 || ips["A"][0] != netip.MustParseAddr("192.0.2.2") {
+			t.Errorf("unexpected A record: %v", ips["A"])
+		}
+	}
+}
+
+func TestLoadManagedDomainsState_NoFile(t *testing.T) {
+	storage := newMockStorage()
+	logger := zap.NewNop()
+	ctx := context.Background()
+
+	// Load from empty storage - should return nil without error
+	result := loadManagedDomainsState(ctx, storage, logger)
+
+	if result != nil {
+		t.Errorf("expected nil result for missing file, got %v", result)
+	}
+}
+
+func TestLoadManagedDomainsState_InvalidJSON(t *testing.T) {
+	storage := newMockStorage()
+	logger := zap.NewNop()
+	ctx := context.Background()
+
+	// Store invalid JSON
+	storage.Store(ctx, managedDomainsStorageKey, []byte("not valid json"))
+
+	// Should return nil on parse error
+	result := loadManagedDomainsState(ctx, storage, logger)
+
+	if result != nil {
+		t.Errorf("expected nil result for invalid JSON, got %v", result)
+	}
+}
+
+func TestLoadManagedDomainsState_InvalidIP(t *testing.T) {
+	storage := newMockStorage()
+	logger := zap.NewNop()
+	ctx := context.Background()
+
+	// Store data with an invalid IP
+	state := managedDomainsState{
+		LastUpdated: time.Now().UTC(),
+		Domains: map[string]map[string][]string{
+			"example.com.": {
+				"A": {"192.0.2.1", "not-an-ip", "192.0.2.2"},
+			},
+		},
+	}
+	data, _ := json.Marshal(state)
+	storage.Store(ctx, managedDomainsStorageKey, data)
+
+	result := loadManagedDomainsState(ctx, storage, logger)
+
+	// Should only have the valid IPs
+	if len(result["example.com."]["A"]) != 2 {
+		t.Errorf("expected 2 valid IPs, got %d", len(result["example.com."]["A"]))
+	}
+}
+
+func TestSaveAndLoadRoundTrip(t *testing.T) {
+	storage := newMockStorage()
+	logger := zap.NewNop()
+	ctx := context.Background()
+
+	// Create test data
+	original := make(domainTypeIPs)
+	original["example.com."] = map[string][]netip.Addr{
+		"A":    {netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")},
+		"AAAA": {netip.MustParseAddr("2001:db8::1")},
+	}
+	original["test.example.com."] = map[string][]netip.Addr{
+		"A": {netip.MustParseAddr("192.0.2.100")},
+	}
+
+	// Save
+	saveManagedDomainsState(ctx, storage, original, logger)
+
+	// Load
+	loaded := loadManagedDomainsState(ctx, storage, logger)
+
+	// Verify round-trip
+	if len(loaded) != len(original) {
+		t.Fatalf("domain count mismatch: got %d, want %d", len(loaded), len(original))
+	}
+
+	for domain, origTypes := range original {
+		loadedTypes, ok := loaded[domain]
+		if !ok {
+			t.Errorf("missing domain after round-trip: %s", domain)
+			continue
+		}
+
+		for recType, origIPs := range origTypes {
+			loadedIPs, ok := loadedTypes[recType]
+			if !ok {
+				t.Errorf("missing record type %s for domain %s", recType, domain)
+				continue
+			}
+
+			if len(loadedIPs) != len(origIPs) {
+				t.Errorf("IP count mismatch for %s %s: got %d, want %d",
+					domain, recType, len(loadedIPs), len(origIPs))
+			}
+		}
+	}
+}
