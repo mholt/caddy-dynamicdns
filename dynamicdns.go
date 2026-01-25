@@ -423,7 +423,15 @@ func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) (domainTypeIPs
 			for _, n := range names {
 				name := libdns.AbsoluteName(n, zone)
 				ips := make(map[string][]netip.Addr)
-				for _, t := range []string{recordTypeA, recordTypeAAAA} {
+				// Only look up record types that are enabled in Versions
+				var typesToCheck []string
+				if a.Versions.V4Enabled() {
+					typesToCheck = append(typesToCheck, recordTypeA)
+				}
+				if a.Versions.V6Enabled() {
+					typesToCheck = append(typesToCheck, recordTypeAAAA)
+				}
+				for _, t := range typesToCheck {
 					if ip, ok := recMap[name][t]; ok {
 						ips[t] = []netip.Addr{ip}
 					} else {
