@@ -638,6 +638,8 @@ const managedDomainsStorageKey = "dynamic_dns/managed_domains.json"
 
 // managedDomainsState is the structure persisted to storage
 type managedDomainsState struct {
+	// LastUpdated is the timestamp when this state was last saved
+	LastUpdated time.Time `json:"last_updated"`
 	// Domains maps absolute domain names to their record types and IPs
 	Domains map[string]map[string][]string `json:"domains"`
 }
@@ -670,7 +672,9 @@ func loadManagedDomainsState(ctx context.Context, storage certmagic.Storage, log
 		}
 	}
 
-	logger.Info("loaded managed domains state from storage", zap.Int("count", len(result)))
+	logger.Info("loaded managed domains state from storage",
+		zap.Int("count", len(result)),
+		zap.Time("last_updated", state.LastUpdated))
 	return result
 }
 
@@ -682,7 +686,8 @@ func saveManagedDomainsState(ctx context.Context, storage certmagic.Storage, dom
 
 	// Convert netip.Addr to strings for JSON serialization
 	state := managedDomainsState{
-		Domains: make(map[string]map[string][]string),
+		LastUpdated: time.Now().UTC(),
+		Domains:     make(map[string]map[string][]string),
 	}
 	for domain, types := range domains {
 		state.Domains[domain] = make(map[string][]string)
