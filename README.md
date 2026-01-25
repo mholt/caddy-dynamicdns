@@ -290,3 +290,69 @@ Equivalent JSON config:
 }
 ```
 </details>
+
+<details>
+<summary>Delete Orphans (cleanup removed domains)</summary>
+
+When using `dynamic_domains`, if you remove a domain from your Caddyfile, the DNS record will remain in your DNS provider. The `delete_orphans` option will automatically delete DNS records for domains that are no longer in your configuration.
+
+Note:
+* Only records that were previously managed by caddy-dynamicdns will be deleted. Manually created DNS records are safe.
+* The DNS provider must implement the `libdns.RecordDeleter` interface.
+* State is persisted to Caddy's storage (works with any storage provider) so orphans are detected even after Caddy restarts.
+
+Caddyfile config:
+
+```
+{
+	dynamic_dns {
+		provider cloudflare {env.CLOUDFLARE_API_TOKEN}
+		domains {
+			example.com
+		}
+		dynamic_domains
+		delete_orphans
+	}
+}
+
+# Initially, this domain is managed.
+cool.example.com {
+	respond "Hello"
+}
+
+# If you later remove cool.example.com from your Caddyfile,
+# the DNS record will be automatically deleted on the next check.
+```
+
+Equivalent JSON config:
+```json
+{
+	"apps": {
+		"dynamic_dns": {
+			"domains": {
+				"example.com": ["@"]
+			},
+			"dynamic_domains": true,
+			"delete_orphans": true,
+			"dns_provider": {
+				"name": "cloudflare",
+				"api_token": "{env.CLOUDFLARE_API_TOKEN}"
+			}
+		}
+	}
+}
+```
+
+The managed domains state is stored in `dynamic_dns/managed_domains.json` within Caddy's data directory. The file contains a timestamp and the list of domains being tracked:
+
+```json
+{
+  "last_updated": "2026-01-25T08:00:00Z",
+  "domains": {
+    "cool.example.com.": {
+      "A": ["203.0.113.1"]
+    }
+  }
+}
+```
+</details>
