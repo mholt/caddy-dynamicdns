@@ -17,14 +17,18 @@ package dynamicdns
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/caddyserver/certmagic"
+	"github.com/libdns/libdns"
 	"go.uber.org/zap"
 )
+
+// Mock Storage
 
 // mockStorage implements certmagic.Storage for testing
 type mockStorage struct {
@@ -91,6 +95,40 @@ type mockNotExistError struct {
 func (e *mockNotExistError) Error() string {
 	return "key not found: " + e.key
 }
+
+// Mock DNS Provider
+
+// mockDNSProvider implements libdns.RecordSetter and libdns.RecordDeleter for testing
+type mockDNSProvider struct {
+	deletedRecords []deletedRecord
+	deleteError    error
+}
+
+type deletedRecord struct {
+	zone    string
+	records []libdns.Record
+}
+
+func (m *mockDNSProvider) SetRecords(ctx context.Context, zone string, recs []libdns.Record) ([]libdns.Record, error) {
+	return recs, nil
+}
+
+func (m *mockDNSProvider) DeleteRecords(ctx context.Context, zone string, recs []libdns.Record) ([]libdns.Record, error) {
+	if m.deleteError != nil {
+		return nil, m.deleteError
+	}
+	m.deletedRecords = append(m.deletedRecords, deletedRecord{zone: zone, records: recs})
+	return recs, nil
+}
+
+// mockDNSProviderNoDelete implements only libdns.RecordSetter (no delete support)
+type mockDNSProviderNoDelete struct{}
+
+func (m *mockDNSProviderNoDelete) SetRecords(ctx context.Context, zone string, recs []libdns.Record) ([]libdns.Record, error) {
+	return recs, nil
+}
+
+// Storage Tests
 
 func TestSaveManagedDomainsState(t *testing.T) {
 	storage := newMockStorage()
@@ -337,5 +375,207 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 					domain, recType, len(loadedIPs), len(origIPs))
 			}
 		}
+	}
+}
+
+// Delete Orphaned Records Tests
+
+func TestDeleteOrphanedRecords_Disabled(t *testing.T) {
+	app := App{
+		DeleteOrphans: false,
+		logger:        zap.NewNop(),
+	}
+
+	// Set up lastIPs
+	lastIPs = make(domainTypeIPs)
+	lastIPs["orphan.example.com."] = map[string][]netip.Addr{
+		"A": {netip.MustParseAddr("192.0.2.1")},
+	}
+	defer func() { lastIPs = nil }()
+
+	allDomains := map[string][]string{
+		"example.com.": {"@"},
+	}
+
+	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+
+	if result {
+		t.Error("expected false when DeleteOrphans is disabled")
+	}
+}
+
+func TestDeleteOrphanedRecords_NilLastIPs(t *testing.T) {
+	app := App{
+		DeleteOrphans: true,
+		logger:        zap.NewNop(),
+	}
+
+	lastIPs = nil
+
+	allDomains := map[string][]string{
+		"example.com.": {"@"},
+	}
+
+	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+
+	if result {
+		t.Error("expected false when lastIPs is nil")
+	}
+}
+
+func TestDeleteOrphanedRecords_ProviderNoDeleteSupport(t *testing.T) {
+	app := App{
+		DeleteOrphans: true,
+		dnsProvider:   &mockDNSProviderNoDelete{},
+		logger:        zap.NewNop(),
+	}
+
+	lastIPs = make(domainTypeIPs)
+	lastIPs["orphan.example.com."] = map[string][]netip.Addr{
+		"A": {netip.MustParseAddr("192.0.2.1")},
+	}
+	defer func() { lastIPs = nil }()
+
+	allDomains := map[string][]string{
+		"example.com.": {"@"},
+	}
+
+	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+
+	if result {
+		t.Error("expected false when provider doesn't support RecordDeleter")
+	}
+}
+
+func TestDeleteOrphanedRecords_DomainStillInConfig(t *testing.T) {
+	provider := &mockDNSProvider{}
+	app := App{
+		DeleteOrphans: true,
+		dnsProvider:   provider,
+		logger:        zap.NewNop(),
+	}
+
+	lastIPs = make(domainTypeIPs)
+	lastIPs["sub.example.com."] = map[string][]netip.Addr{
+		"A": {netip.MustParseAddr("192.0.2.1")},
+	}
+	defer func() { lastIPs = nil }()
+
+	// Domain is still in config
+	allDomains := map[string][]string{
+		"example.com.": {"sub"},
+	}
+
+	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+
+	if result {
+		t.Error("expected false when domain is still in config")
+	}
+	if len(provider.deletedRecords) > 0 {
+		t.Error("expected no records to be deleted")
+	}
+}
+
+func TestDeleteOrphanedRecords_DeletesOrphan(t *testing.T) {
+	provider := &mockDNSProvider{}
+	app := App{
+		DeleteOrphans: true,
+		dnsProvider:   provider,
+		logger:        zap.NewNop(),
+	}
+
+	lastIPs = make(domainTypeIPs)
+	lastIPs["orphan.example.com."] = map[string][]netip.Addr{
+		"A": {netip.MustParseAddr("192.0.2.1")},
+	}
+	defer func() { lastIPs = nil }()
+
+	// orphan.example.com is NOT in allDomains
+	allDomains := map[string][]string{
+		"example.com.": {"@"},
+	}
+
+	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+
+	if !result {
+		t.Error("expected true when orphan is deleted")
+	}
+	if len(provider.deletedRecords) != 1 {
+		t.Fatalf("expected 1 delete call, got %d", len(provider.deletedRecords))
+	}
+	if provider.deletedRecords[0].zone != "example.com." {
+		t.Errorf("expected zone example.com., got %s", provider.deletedRecords[0].zone)
+	}
+}
+
+func TestDeleteOrphanedRecords_DeleteError(t *testing.T) {
+	provider := &mockDNSProvider{
+		deleteError: errors.New("delete failed"),
+	}
+	app := App{
+		DeleteOrphans: true,
+		dnsProvider:   provider,
+		logger:        zap.NewNop(),
+	}
+
+	lastIPs = make(domainTypeIPs)
+	lastIPs["orphan.example.com."] = map[string][]netip.Addr{
+		"A": {netip.MustParseAddr("192.0.2.1")},
+	}
+	defer func() { lastIPs = nil }()
+
+	allDomains := map[string][]string{
+		"example.com.": {"@"},
+	}
+
+	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+
+	// Should return false because delete failed
+	if result {
+		t.Error("expected false when delete fails")
+	}
+	// But orphan should still be removed from lastIPs
+	if _, exists := lastIPs["orphan.example.com."]; exists {
+		t.Error("expected orphan to be removed from lastIPs even on delete error")
+	}
+}
+
+func TestDeleteOrphanedRecords_MultipleOrphans(t *testing.T) {
+	provider := &mockDNSProvider{}
+	app := App{
+		DeleteOrphans: true,
+		dnsProvider:   provider,
+		logger:        zap.NewNop(),
+	}
+
+	lastIPs = make(domainTypeIPs)
+	lastIPs["orphan1.example.com."] = map[string][]netip.Addr{
+		"A": {netip.MustParseAddr("192.0.2.1")},
+	}
+	lastIPs["orphan2.example.com."] = map[string][]netip.Addr{
+		"A":    {netip.MustParseAddr("192.0.2.2")},
+		"AAAA": {netip.MustParseAddr("2001:db8::1")},
+	}
+	lastIPs["keep.example.com."] = map[string][]netip.Addr{
+		"A": {netip.MustParseAddr("192.0.2.3")},
+	}
+	defer func() { lastIPs = nil }()
+
+	// Only keep.example.com is in config
+	allDomains := map[string][]string{
+		"example.com.": {"keep"},
+	}
+
+	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+
+	if !result {
+		t.Error("expected true when orphans are deleted")
+	}
+	if len(provider.deletedRecords) != 2 {
+		t.Errorf("expected 2 delete calls, got %d", len(provider.deletedRecords))
+	}
+	// keep.example.com should still be in lastIPs
+	if _, exists := lastIPs["keep.example.com."]; !exists {
+		t.Error("expected keep.example.com. to remain in lastIPs")
 	}
 }

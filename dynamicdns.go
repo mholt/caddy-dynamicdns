@@ -243,56 +243,8 @@ func (a App) checkIPAndUpdateDNS() error {
 		}
 	}
 
-	// Build set of current absolute domain names for orphan detection
-	currentAbsNames := make(map[string]bool)
-	for zone, names := range allDomains {
-		for _, name := range names {
-			currentAbsNames[libdns.AbsoluteName(name, zone)] = true
-		}
-	}
-
 	// Delete orphaned DNS records (domains that were removed from config)
-	orphansDeleted := false
-	if deleter, ok := a.dnsProvider.(libdns.RecordDeleter); ok && a.DeleteOrphans && lastIPs != nil {
-		for absName, typeIPs := range lastIPs {
-			if currentAbsNames[absName] {
-				continue // Still in config, not orphaned
-			}
-			// Find zone for deletion (absName ends with zone)
-			for zone := range allDomains {
-				if absName == zone || strings.HasSuffix(absName, "."+zone) {
-					// Build records to delete
-					var recsToDelete []libdns.Record
-					name := strings.TrimSuffix(absName, "."+zone)
-					if name == absName {
-						name = "@"
-					}
-
-					for _, ips := range typeIPs {
-						for _, ip := range ips {
-							if ip.IsValid() {
-								recsToDelete = append(recsToDelete, libdns.Address{Name: name, IP: ip})
-							}
-						}
-					}
-					if len(recsToDelete) > 0 {
-						if _, err := deleter.DeleteRecords(a.ctx, zone, recsToDelete); err != nil {
-							a.logger.Error("failed to delete orphaned DNS record",
-								zap.String("domain", absName),
-								zap.Error(err))
-						} else {
-							a.logger.Info("deleted orphaned DNS record",
-								zap.String("zone", zone),
-								zap.String("domain", absName))
-							orphansDeleted = true
-						}
-					}
-					break
-				}
-			}
-			delete(lastIPs, absName)
-		}
-	}
+	orphansDeleted := a.deleteOrphanedRecords(a.ctx, allDomains)
 
 	// Lookup current address(es) from first successful IP source
 	var currentIPs []netip.Addr
@@ -398,6 +350,71 @@ func (a App) checkIPAndUpdateDNS() error {
 	}
 
 	return nil
+}
+
+// deleteOrphanedRecords deletes DNS records for domains that are no longer
+// in the configuration. Returns true if any records were deleted.
+func (a App) deleteOrphanedRecords(ctx context.Context, allDomains map[string][]string) bool {
+	if !a.DeleteOrphans || lastIPs == nil {
+		return false
+	}
+
+	deleter, ok := a.dnsProvider.(libdns.RecordDeleter)
+	if !ok {
+		return false
+	}
+
+	// Build set of current absolute domain names
+	currentAbsNames := make(map[string]bool)
+	for zone, names := range allDomains {
+		for _, name := range names {
+			currentAbsNames[libdns.AbsoluteName(name, zone)] = true
+		}
+	}
+
+	orphansDeleted := false
+	for absName, typeIPs := range lastIPs {
+		if currentAbsNames[absName] {
+			continue // Still in config, not orphaned
+		}
+
+		// Find zone for deletion (absName ends with zone)
+		for zone := range allDomains {
+			if absName == zone || strings.HasSuffix(absName, "."+zone) {
+				// Build records to delete
+				var recsToDelete []libdns.Record
+				name := strings.TrimSuffix(absName, "."+zone)
+				if name == absName {
+					name = "@"
+				}
+
+				for _, ips := range typeIPs {
+					for _, ip := range ips {
+						if ip.IsValid() {
+							recsToDelete = append(recsToDelete, libdns.Address{Name: name, IP: ip})
+						}
+					}
+				}
+
+				if len(recsToDelete) > 0 {
+					if _, err := deleter.DeleteRecords(ctx, zone, recsToDelete); err != nil {
+						a.logger.Error("failed to delete orphaned DNS record",
+							zap.String("domain", absName),
+							zap.Error(err))
+					} else {
+						a.logger.Info("deleted orphaned DNS record",
+							zap.String("zone", zone),
+							zap.String("domain", absName))
+						orphansDeleted = true
+					}
+				}
+				break
+			}
+		}
+		delete(lastIPs, absName)
+	}
+
+	return orphansDeleted
 }
 
 // lookupCurrentIPsFromDNS looks up the current IP addresses
