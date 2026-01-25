@@ -110,6 +110,13 @@ func (a *App) Provision(ctx caddy.Context) error {
 	}
 	a.dnsProvider = val.(libdns.RecordSetter)
 
+	// warn if delete_orphans is enabled but provider doesn't support it
+	if a.DeleteOrphans {
+		if _, ok := a.dnsProvider.(libdns.RecordDeleter); !ok {
+			a.logger.Warn("delete_orphans is enabled but DNS provider does not implement libdns.RecordDeleter; orphan cleanup will be disabled")
+		}
+	}
+
 	// set up the IP source module or use a default
 	if a.IPSourcesRaw != nil {
 		vals, err := ctx.LoadModule(a, "IPSourcesRaw")
