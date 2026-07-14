@@ -35,7 +35,12 @@ func init() {
 //			<zone> <names...>
 //		}
 //		check_interval <duration>
-//		provider <name> ...
+//		provider <name> ... {
+//			...
+//			domains {
+//				<zone> <names...>
+//			}
+//		}
 //		ip_source upnp|simple_http <endpoint>
 //		include <CIDRs ...>
 //		exclude <CIDRs ...>
@@ -46,6 +51,12 @@ func init() {
 //	}
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
+//
+// The provider directive may be repeated to update domains across multiple
+// DNS providers, or multiple accounts of the same provider. In that case,
+// each provider's domains are configured with a domains block inside the
+// provider's block; the name "domains" is reserved there, and everything
+// else in the block belongs to the DNS provider module as usual.
 func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 	app := new(App)
 
@@ -58,16 +69,8 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 	for d.NextBlock(0) {
 		switch d.Val() {
 		case "domains":
-			for nesting := d.Nesting(); d.NextBlock(nesting); {
-				zone := d.Val()
-				if zone == "" {
-					return nil, d.ArgErr()
-				}
-				names := d.RemainingArgs()
-				if app.Domains == nil {
-					app.Domains = make(map[string][]string)
-				}
-				app.Domains[zone] = append(app.Domains[zone], names...)
+			if err := parseDomains(d, &app.Domains); err != nil {
+				return nil, err
 			}
 
 		case "update_only":
@@ -98,11 +101,21 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 			}
 			provName := d.Val()
 			modID := "dns.providers." + provName
-			unm, err := caddyfile.UnmarshalModule(d, modID)
+
+			// the provider's block may contain a domains block reserved
+			// for this app; split it out and give the DNS provider module
+			// only its own tokens
+			var prov Provider
+			moduleTokens, err := splitProviderSegment(d.NextSegment(), &prov)
 			if err != nil {
 				return nil, err
 			}
-			app.DNSProviderRaw = caddyconfig.JSONModuleObject(unm, "name", provName, nil)
+			unm, err := unmarshalModuleTokens(d, modID, moduleTokens)
+			if err != nil {
+				return nil, err
+			}
+			prov.DNSProviderRaw = caddyconfig.JSONModuleObject(unm, "name", provName, nil)
+			app.Providers = append(app.Providers, prov)
 
 		case "ip_source":
 			if !d.NextArg() {
@@ -171,10 +184,110 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 		}
 	}
 
+	// a single provider with no domains of its own is equivalent to the
+	// legacy single-provider config; keep the original config shape
+	if len(app.Providers) == 1 && app.Providers[0].Domains == nil {
+		app.DNSProviderRaw = app.Providers[0].DNSProviderRaw
+		app.Providers = nil
+	}
+
 	return httpcaddyfile.App{
 		Name:  "dynamic_dns",
 		Value: caddyconfig.JSON(app, nil),
 	}, nil
+}
+
+// parseDomains parses a domains block into the given map. The dispenser
+// must be positioned on the "domains" token.
+func parseDomains(d *caddyfile.Dispenser, domains *map[string][]string) error {
+	for nesting := d.Nesting(); d.NextBlock(nesting); {
+		zone := d.Val()
+		if zone == "" {
+			return d.ArgErr()
+		}
+		names := d.RemainingArgs()
+		if *domains == nil {
+			*domains = make(map[string][]string)
+		}
+		(*domains)[zone] = append((*domains)[zone], names...)
+	}
+	return nil
+}
+
+// splitProviderSegment partitions the tokens of a provider directive's
+// segment (the provider module name through the end of its block) into
+// the tokens destined for the DNS provider module and the domains blocks
+// reserved by this app, which are parsed into prov. The returned tokens
+// are what remains for the DNS provider module to unmarshal.
+func splitProviderSegment(seg caddyfile.Segment, prov *Provider) ([]caddyfile.Token, error) {
+	d := caddyfile.NewDispenser(seg)
+
+	// the provider module name and its inline arguments
+	d.Next()
+	moduleTokens := []caddyfile.Token{d.Token()}
+	for d.NextArg() {
+		moduleTokens = append(moduleTokens, d.Token())
+	}
+
+	var blockTokens []caddyfile.Token
+	var openBrace, closeBrace caddyfile.Token
+	inBlock := false
+	for nesting := d.Nesting(); d.NextBlock(nesting); {
+		if !inBlock {
+			// NextBlock() consumed the open curly brace; rewind to
+			// capture it, so that the module's block can be rebuilt
+			// with its surrounding braces
+			d.Prev()
+			openBrace = d.Token()
+			d.Next()
+			inBlock = true
+		}
+		// the cursor is on a subdirective name; consume its whole
+		// segment so nested tokens are never mistaken for a
+		// subdirective of the provider block
+		if d.Val() == "domains" {
+			// reserved for this app
+			sub := caddyfile.NewDispenser(d.NextSegment())
+			sub.Next() // consume "domains"
+			if err := parseDomains(sub, &prov.Domains); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		// everything else belongs to the DNS provider module
+		blockTokens = append(blockTokens, d.NextSegment()...)
+	}
+	if inBlock {
+		closeBrace = d.Token()
+		// if the block contained only domains, leave the braces off
+		// so the module sees the same tokens as without a block
+		if len(blockTokens) > 0 {
+			moduleTokens = append(moduleTokens, openBrace)
+			moduleTokens = append(moduleTokens, blockTokens...)
+			moduleTokens = append(moduleTokens, closeBrace)
+		}
+	}
+	return moduleTokens, nil
+}
+
+// unmarshalModuleTokens is like caddyfile.UnmarshalModule, except that it
+// unmarshals the module from an explicit list of tokens instead of from
+// the dispenser's next segment.
+func unmarshalModuleTokens(d *caddyfile.Dispenser, moduleID string, tokens []caddyfile.Token) (caddyfile.Unmarshaler, error) {
+	mod, err := caddy.GetModule(moduleID)
+	if err != nil {
+		return nil, d.Errf("getting module named '%s': %v", moduleID, err)
+	}
+	inst := mod.New()
+	unm, ok := inst.(caddyfile.Unmarshaler)
+	if !ok {
+		return nil, d.Errf("module %s is not a Caddyfile unmarshaler; is %T", mod.ID, inst)
+	}
+	err = unm.UnmarshalCaddyfile(caddyfile.NewDispenser(tokens))
+	if err != nil {
+		return nil, err
+	}
+	return unm, nil
 }
 
 // Parse a list of CIDR ranges from the remaining args.

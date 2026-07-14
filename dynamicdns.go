@@ -41,7 +41,8 @@ type App struct {
 	IPSourcesRaw []json.RawMessage `json:"ip_sources,omitempty" caddy:"namespace=dynamic_dns.ip_sources inline_key=source"`
 
 	// The configuration for the DNS provider with which the DNS
-	// records will be updated.
+	// records will be updated. If set, it is treated as a single
+	// entry in Providers, together with the top-level Domains.
 	DNSProviderRaw json.RawMessage `json:"dns_provider,omitempty" caddy:"namespace=dns.providers inline_key=name"`
 
 	// The record names, keyed by DNS zone, for which to update the A/AAAA records.
@@ -51,7 +52,17 @@ type App struct {
 	// For example, assuming your zone is example.com, and you want to update A/AAAA
 	// records for "example.com" and "www.example.com" so that they resolve to this
 	// Caddy instance, configure like so: `"example.com": ["@", "www"]`
+	//
+	// These domains belong to the DNS provider configured by dns_provider.
+	// When using multiple providers, configure domains per entry in Providers
+	// instead.
 	Domains map[string][]string `json:"domains,omitempty"`
+
+	// The list of DNS providers, each managing its own set of domains.
+	// This allows updating DNS records across multiple DNS providers, or
+	// multiple accounts of the same provider. The dns_provider and domains
+	// fields above are equivalent to a single entry in this list.
+	Providers []Provider `json:"providers,omitempty"`
 
 	// If enabled, no new DNS records will be created. Only existing records will be updated.
 	// This means that the A or AAAA records need to be created manually ahead of time.
@@ -74,11 +85,29 @@ type App struct {
 	// The TTL to set on DNS records.
 	TTL caddy.Duration `json:"ttl,omitempty"`
 
-	ipSources   []IPSource
-	dnsProvider libdns.RecordSetter
+	ipSources []IPSource
 
 	ctx    caddy.Context
 	logger *zap.Logger
+}
+
+// Provider associates a DNS provider with the record names,
+// keyed by DNS zone, that it manages.
+type Provider struct {
+	// The configuration for the DNS provider with which the DNS
+	// records will be updated.
+	DNSProviderRaw json.RawMessage `json:"dns_provider,omitempty" caddy:"namespace=dns.providers inline_key=name"`
+
+	// The record names, keyed by DNS zone, for which to update the A/AAAA records.
+	// Record names are relative to the zone. The zone is usually your registered
+	// domain name. To refer to the zone itself, use the record name of "@".
+	//
+	// For example, assuming your zone is example.com, and you want to update A/AAAA
+	// records for "example.com" and "www.example.com" so that they resolve to this
+	// Caddy instance, configure like so: `"example.com": ["@", "www"]`
+	Domains map[string][]string `json:"domains,omitempty"`
+
+	dnsProvider libdns.RecordSetter
 }
 
 // CaddyModule returns the Caddy module information.
@@ -94,15 +123,21 @@ func (a *App) Provision(ctx caddy.Context) error {
 	a.ctx = ctx
 	a.logger = ctx.Logger(a)
 
-	// set up the DNS provider module
-	if len(a.DNSProviderRaw) == 0 {
-		return fmt.Errorf("a DNS provider is required")
+	if err := a.normalizeProviders(); err != nil {
+		return err
 	}
-	val, err := ctx.LoadModule(a, "DNSProviderRaw")
-	if err != nil {
-		return fmt.Errorf("loading DNS provider module: %v", err)
+
+	// set up the DNS provider modules
+	for i := range a.Providers {
+		if len(a.Providers[i].DNSProviderRaw) == 0 {
+			return fmt.Errorf("provider %d: a DNS provider is required", i)
+		}
+		val, err := ctx.LoadModule(&a.Providers[i], "DNSProviderRaw")
+		if err != nil {
+			return fmt.Errorf("loading DNS provider module: %v", err)
+		}
+		a.Providers[i].dnsProvider = val.(libdns.RecordSetter)
 	}
-	a.dnsProvider = val.(libdns.RecordSetter)
 
 	// set up the IP source module or use a default
 	if a.IPSourcesRaw != nil {
@@ -116,7 +151,7 @@ func (a *App) Provision(ctx caddy.Context) error {
 	}
 	if len(a.ipSources) == 0 {
 		var sh SimpleHTTP
-		if err = sh.Provision(ctx); err != nil {
+		if err := sh.Provision(ctx); err != nil {
 			return err
 		}
 		a.ipSources = []IPSource{sh}
@@ -130,6 +165,27 @@ func (a *App) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("check interval must be at least 1 second")
 	}
 
+	return nil
+}
+
+// normalizeProviders folds the legacy single-provider config (top-level
+// dns_provider and domains) into the providers list and validates the
+// result.
+func (a *App) normalizeProviders() error {
+	if len(a.DNSProviderRaw) > 0 {
+		a.Providers = append([]Provider{{DNSProviderRaw: a.DNSProviderRaw, Domains: a.Domains}}, a.Providers...)
+	} else if len(a.Domains) > 0 {
+		// top-level domains without a top-level provider can only belong
+		// to a sole provider that has no domains of its own
+		if len(a.Providers) == 1 && a.Providers[0].Domains == nil {
+			a.Providers[0].Domains = a.Domains
+		} else {
+			return fmt.Errorf("with multiple providers, domains must be configured per provider")
+		}
+	}
+	if len(a.Providers) == 0 {
+		return fmt.Errorf("a DNS provider is required")
+	}
 	return nil
 }
 
@@ -202,18 +258,6 @@ func (a App) checkIPAndUpdateDNS() error {
 
 	var err error
 
-	allDomains := a.allDomains()
-
-	// if we don't know current IPs, look them up from DNS
-	if lastIPs == nil {
-		lastIPs, err = a.lookupCurrentIPsFromDNS(allDomains)
-		if err != nil {
-			// not the end of the world, but might be an extra initial API hit with the DNS provider
-			a.logger.Error("unable to lookup current IPs from DNS records", zap.Error(err))
-		}
-		a.logger.Debug("looked up current IPs from DNS", zap.Any("lastIPs", lastIPs))
-	}
-
 	// Lookup current address(es) from first successful IP source
 	var currentIPs []netip.Addr
 	for _, ipSrc := range a.ipSources {
@@ -237,6 +281,23 @@ func (a App) checkIPAndUpdateDNS() error {
 
 	// make sure the source returns tidy info; duplicates are wasteful
 	currentIPs = removeDuplicateIPs(currentIPs)
+
+	// update the DNS records of each provider's domains
+	for i := range a.Providers {
+		a.updateProviderDNS(&a.Providers[i], currentIPs)
+	}
+
+	return nil
+}
+
+// updateProviderDNS diffs currentIPs against the last known IPs of the
+// provider's domains and updates the DNS records that are different.
+// Failures are logged.
+func (a App) updateProviderDNS(p *Provider, currentIPs []netip.Addr) {
+	allDomains := a.allDomainsFor(p)
+
+	// if we don't know the current IPs of some domains, look them up from DNS
+	a.seedLastIPsFromDNS(p, allDomains)
 
 	// do a diff of current and previous IPs to make DNS records to update
 	updatedRecsByZone := make(map[string][]libdns.Address)
@@ -268,7 +329,7 @@ func (a App) checkIPAndUpdateDNS() error {
 
 	if len(updatedRecsByZone) == 0 {
 		a.logger.Debug("no IP address change; no update needed")
-		return nil
+		return
 	}
 
 	for zone, addresses := range updatedRecsByZone {
@@ -283,7 +344,7 @@ func (a App) checkIPAndUpdateDNS() error {
 			)
 			records[i] = rec
 		}
-		if _, err = a.dnsProvider.SetRecords(a.ctx, zone, records); err != nil {
+		if _, err := p.dnsProvider.SetRecords(a.ctx, zone, records); err != nil {
 			a.logger.Error("failed setting DNS record(s) with new IP address(es)",
 				zap.String("zone", zone),
 				zap.Error(err),
@@ -307,17 +368,53 @@ func (a App) checkIPAndUpdateDNS() error {
 	}
 	a.logger.Info("finished updating DNS",
 		zap.Strings("current_ips", currentIPStrings))
+}
 
-	return nil
+// seedLastIPsFromDNS looks up, from the provider's DNS records, the current
+// IPs of any of the provider's domains that have not been seeded yet, so
+// that records which are already correct are not redundantly updated.
+func (a App) seedLastIPsFromDNS(p *Provider, allDomains map[string][]string) {
+	unseeded := make(map[string][]string)
+	for zone, names := range allDomains {
+		for _, name := range names {
+			if seededNames[libdns.AbsoluteName(name, zone)] {
+				continue
+			}
+			unseeded[zone] = append(unseeded[zone], name)
+		}
+	}
+	if len(unseeded) == 0 {
+		return
+	}
+
+	ips, err := a.lookupCurrentIPsFromDNS(p, unseeded)
+	if err != nil {
+		// not the end of the world, but might be an extra initial API hit with the DNS provider
+		a.logger.Error("unable to lookup current IPs from DNS records", zap.Error(err))
+		return
+	}
+	a.logger.Debug("looked up current IPs from DNS", zap.Any("lastIPs", ips))
+
+	if lastIPs == nil {
+		lastIPs = make(domainTypeIPs)
+	}
+	for name, typeIPs := range ips {
+		lastIPs[name] = typeIPs
+	}
+	for zone, names := range unseeded {
+		for _, name := range names {
+			seededNames[libdns.AbsoluteName(name, zone)] = true
+		}
+	}
 }
 
 // lookupCurrentIPsFromDNS looks up the current IP addresses
-// from DNS records.
-func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) (domainTypeIPs, error) {
+// from the provider's DNS records.
+func (a App) lookupCurrentIPsFromDNS(p *Provider, domains map[string][]string) (domainTypeIPs, error) {
 	// avoid duplicates
 	currentIPs := make(domainTypeIPs)
 
-	if recordGetter, ok := a.dnsProvider.(libdns.RecordGetter); ok {
+	if recordGetter, ok := p.dnsProvider.(libdns.RecordGetter); ok {
 		for zone, names := range domains {
 			recs, err := recordGetter.GetRecords(a.ctx, zone)
 			if err != nil {
@@ -380,20 +477,23 @@ func (a App) lookupManagedDomains() ([]string, error) {
 	return hosts, nil
 }
 
-func (a App) allDomains() map[string][]string {
+// allDomainsFor returns the domains managed by the provider, including
+// domains discovered from the "http" app's config if DynamicDomains is
+// enabled.
+func (a App) allDomainsFor(p *Provider) map[string][]string {
 	if !a.DynamicDomains {
-		return a.Domains
+		return p.Domains
 	}
 
 	// Read hosts from config.
 	m, err := a.lookupManagedDomains()
 	if err != nil {
-		return a.Domains
+		return p.Domains
 	}
 
 	a.logger.Info("Loaded dynamic domains", zap.Strings("domains", m))
 	d := make(map[string][]string)
-	for zone, domains := range a.Domains {
+	for zone, domains := range p.Domains {
 		d[zone] = domains
 		for _, h := range m {
 			name, ok := func() (string, bool) {
@@ -531,6 +631,11 @@ type domainTypeIPs map[string]map[string][]netip.Addr
 var (
 	lastIPs   domainTypeIPs
 	lastIPsMu sync.Mutex
+
+	// Tracks which domain names have had their current IPs
+	// seeded from DNS records, so that domains added by a
+	// config reload get seeded too. Guarded by lastIPsMu.
+	seededNames = make(map[string]bool)
 
 	// Special value indicate there is a new domain to manage.
 	nilIP netip.Addr
