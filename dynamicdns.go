@@ -74,8 +74,19 @@ type App struct {
 	// The TTL to set on DNS records.
 	TTL caddy.Duration `json:"ttl,omitempty"`
 
+	// Optional side-effect modules run on the same schedule as DNS updates:
+	// only when the learned public IP(s) differ from what we last put in DNS.
+	// See ip_updaters.zte_firewall. Failures are logged and retried on the
+	// next check_interval until they succeed (DNS is not blocked).
+	IPUpdatersRaw []json.RawMessage `json:"ip_updaters,omitempty" caddy:"namespace=dynamic_dns.ip_updaters inline_key=updater"`
+
 	ipSources   []IPSource
+	ipUpdaters  []IPUpdater
 	dnsProvider libdns.RecordSetter
+
+	// When an IP updater fails after an address change, keep retrying on
+	// later ticks even if DNS already matches (so a pinhole is not stuck).
+	ipUpdaterNeedsRetry bool
 
 	ctx    caddy.Context
 	logger *zap.Logger
@@ -122,6 +133,17 @@ func (a *App) Provision(ctx caddy.Context) error {
 		a.ipSources = []IPSource{sh}
 	}
 
+	// set up optional IP updater modules (router firewall, etc.)
+	if a.IPUpdatersRaw != nil {
+		vals, err := ctx.LoadModule(a, "IPUpdatersRaw")
+		if err != nil {
+			return fmt.Errorf("loading IP updater module: %v", err)
+		}
+		for _, val := range vals.([]any) {
+			a.ipUpdaters = append(a.ipUpdaters, val.(IPUpdater))
+		}
+	}
+
 	// make sure a check interval is set
 	if a.CheckInterval == 0 {
 		a.CheckInterval = caddy.Duration(defaultCheckInterval)
@@ -134,19 +156,19 @@ func (a *App) Provision(ctx caddy.Context) error {
 }
 
 // Start starts the app module.
-func (a App) Start() error {
+func (a *App) Start() error {
 	go a.checkerLoop()
 	return nil
 }
 
 // Stop stops the app module.
-func (a App) Stop() error {
+func (a *App) Stop() error {
 	return nil
 }
 
 // checkerLoop checks the public IP address at every check
 // interval. It stops when a.ctx is cancelled.
-func (a App) checkerLoop() {
+func (a *App) checkerLoop() {
 	ticker := time.NewTicker(time.Duration(a.CheckInterval))
 	defer ticker.Stop()
 
@@ -194,7 +216,7 @@ initLoop:
 // checkIPAndUpdateDNS checks public IP addresses and, for any IP addresses
 // that are different from before, it updates DNS records accordingly.
 // It returns an error if all IP sources fail.
-func (a App) checkIPAndUpdateDNS() error {
+func (a *App) checkIPAndUpdateDNS() error {
 	a.logger.Debug("beginning IP address check")
 
 	lastIPsMu.Lock()
@@ -266,11 +288,25 @@ func (a App) checkIPAndUpdateDNS() error {
 		}
 	}
 
-	if len(updatedRecsByZone) == 0 {
+	ipChanged := len(updatedRecsByZone) > 0
+	if !ipChanged && !a.ipUpdaterNeedsRetry {
 		a.logger.Debug("no IP address change; no update needed")
 		return nil
 	}
 
+	if len(a.ipUpdaters) > 0 && (ipChanged || a.ipUpdaterNeedsRetry) {
+		if err := a.runIPUpdaters(currentIPs); err != nil {
+			a.ipUpdaterNeedsRetry = true
+		} else {
+			a.ipUpdaterNeedsRetry = false
+		}
+	}
+
+	if !ipChanged {
+		return nil
+	}
+
+	dnsOK := true
 	for zone, addresses := range updatedRecsByZone {
 		records := make([]libdns.Record, len(addresses))
 		for i, rec := range addresses {
@@ -284,10 +320,13 @@ func (a App) checkIPAndUpdateDNS() error {
 			records[i] = rec
 		}
 		if _, err = a.dnsProvider.SetRecords(a.ctx, zone, records); err != nil {
+			dnsOK = false
 			a.logger.Error("failed setting DNS record(s) with new IP address(es)",
 				zap.String("zone", zone),
 				zap.Error(err),
 			)
+			// Keep lastIPs unchanged so the next interval retries this zone.
+			continue
 		}
 		for _, rec := range addresses {
 			name := libdns.AbsoluteName(rec.Name, zone)
@@ -305,10 +344,35 @@ func (a App) checkIPAndUpdateDNS() error {
 	for i, val := range currentIPs {
 		currentIPStrings[i] = val.String()
 	}
-	a.logger.Info("finished updating DNS",
-		zap.Strings("current_ips", currentIPStrings))
+	if dnsOK {
+		a.logger.Info("finished updating DNS",
+			zap.Strings("current_ips", currentIPStrings))
+	} else {
+		a.logger.Warn("DNS update incomplete; will retry next interval",
+			zap.Strings("current_ips", currentIPStrings))
+	}
 
 	return nil
+}
+
+// runIPUpdaters invokes configured IP updaters. Errors do not abort DNS.
+func (a *App) runIPUpdaters(ips []netip.Addr) error {
+	var firstErr error
+	for _, u := range a.ipUpdaters {
+		name := "ip_updater"
+		if m, ok := u.(caddy.Module); ok {
+			name = m.CaddyModule().ID.Name()
+		}
+		if err := u.UpdateIPs(a.ctx, ips); err != nil {
+			a.logger.Error("IP updater failed",
+				zap.String("updater", name),
+				zap.Error(err))
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // lookupCurrentIPsFromDNS looks up the current IP addresses

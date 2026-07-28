@@ -206,6 +206,35 @@ func Test_ParseApp(t *testing.T) {
 			`),
 			wantErr: true,
 		},
+		{
+			name: "ip_updater zte_firewall",
+			d: caddyfile.NewTestDispenser(`
+				dynamic_dns {
+					ip_updater zte_firewall {
+						router http://192.168.1.1
+						username admin
+						password secret
+						name caddy
+						port 443
+						protocol BOTH
+					}
+				}
+			`),
+			want: `{
+				"ip_updaters": [
+					{
+						"updater": "zte_firewall",
+						"router": "http://192.168.1.1",
+						"username": "admin",
+						"password": "secret",
+						"name": "caddy",
+						"port": 443,
+						"protocol": "BOTH"
+					}
+				],
+				"versions": {}
+			}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

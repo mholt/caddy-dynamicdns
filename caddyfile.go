@@ -36,12 +36,20 @@ func init() {
 //		}
 //		check_interval <duration>
 //		provider <name> ...
-//		ip_source upnp|simple_http <endpoint>
+//		ip_source upnp|simple_http|interface ...
+//		ip_updater zte_firewall {
+//			router   <url>
+//			password <secret>
+//			name     <rule-name>
+//			port     <port>
+//			username <user>         // optional
+//			protocol TCP|UDP|BOTH  // optional
+//		}
 //		include <CIDRs ...>
 //		exclude <CIDRs ...>
 //		update_only
 //		dynamic_domains
-//		versions ipv4|ipv6
+//		versions ipv4|ipv6         // either or both; omit = both
 //		ttl <duration>
 //	}
 //
@@ -115,6 +123,18 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 				return nil, err
 			}
 			app.IPSourcesRaw = append(app.IPSourcesRaw, caddyconfig.JSONModuleObject(unm, "source", sourceType, nil))
+
+		case "ip_updater":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			updaterType := d.Val()
+			modID := "dynamic_dns.ip_updaters." + updaterType
+			unm, err := caddyfile.UnmarshalModule(d, modID)
+			if err != nil {
+				return nil, err
+			}
+			app.IPUpdatersRaw = append(app.IPUpdatersRaw, caddyconfig.JSONModuleObject(unm, "updater", updaterType, nil))
 
 		case "versions":
 			args := d.RemainingArgs()
