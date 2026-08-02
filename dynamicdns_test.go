@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/certmagic"
 	"github.com/libdns/libdns"
 	"go.uber.org/zap"
@@ -98,10 +99,12 @@ func (e *mockNotExistError) Error() string {
 
 // Mock DNS Provider
 
-// mockDNSProvider implements libdns.RecordSetter and libdns.RecordDeleter for testing
+// mockDNSProvider implements libdns.RecordSetter, libdns.RecordGetter
+// and libdns.RecordDeleter for testing
 type mockDNSProvider struct {
 	deletedRecords []deletedRecord
 	deleteError    error
+	records        map[string][]libdns.Record
 }
 
 type deletedRecord struct {
@@ -111,6 +114,10 @@ type deletedRecord struct {
 
 func (m *mockDNSProvider) SetRecords(ctx context.Context, zone string, recs []libdns.Record) ([]libdns.Record, error) {
 	return recs, nil
+}
+
+func (m *mockDNSProvider) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
+	return m.records[zone], nil
 }
 
 func (m *mockDNSProvider) DeleteRecords(ctx context.Context, zone string, recs []libdns.Record) ([]libdns.Record, error) {
@@ -577,5 +584,90 @@ func TestDeleteOrphanedRecords_MultipleOrphans(t *testing.T) {
 	// keep.example.com should still be in lastIPs
 	if _, exists := lastIPs["keep.example.com."]; !exists {
 		t.Error("expected keep.example.com. to remain in lastIPs")
+	}
+}
+
+// TestLookupCurrentIPsFromDNS_OnlyIPv6Enabled verifies that with only IPv6
+// enabled, A records are not looked up from DNS. This is a regression test
+// for issue #89: caddy-dynamicdns logged "domain not found in DNS" for A
+// records even though only `versions ipv6` was configured, because it always
+// looked up both record types regardless of the enabled versions.
+func TestLookupCurrentIPsFromDNS_OnlyIPv6Enabled(t *testing.T) {
+	falseBool := false
+	trueBool := true
+	provider := &mockDNSProvider{
+		records: map[string][]libdns.Record{
+			"example.com.": {
+				libdns.Address{Name: "sub", IP: netip.MustParseAddr("2001:db8::1")},
+			},
+		},
+	}
+	app := App{
+		Versions:    IPVersions{IPv4: &falseBool, IPv6: &trueBool},
+		dnsProvider: provider,
+		ctx:         caddy.Context{},
+		logger:      zap.NewNop(),
+	}
+
+	ips, err := app.lookupCurrentIPsFromDNS(map[string][]string{
+		"example.com.": {"sub"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	absName := libdns.AbsoluteName("sub", "example.com.")
+
+	aaaa, ok := ips[absName]["AAAA"]
+	if !ok {
+		t.Fatal("expected AAAA record to be looked up with IPv6 enabled")
+	}
+	if len(aaaa) != 1 || aaaa[0] != netip.MustParseAddr("2001:db8::1") {
+		t.Errorf("expected AAAA record 2001:db8::1, got %v", aaaa)
+	}
+
+	if _, ok := ips[absName]["A"]; ok {
+		t.Error("expected no A record lookup when only IPv6 is enabled (issue #89)")
+	}
+}
+
+// TestLookupCurrentIPsFromDNS_OnlyIPv4Enabled verifies the inverse of issue
+// #89: with only IPv4 enabled, AAAA records are not looked up from DNS.
+func TestLookupCurrentIPsFromDNS_OnlyIPv4Enabled(t *testing.T) {
+	falseBool := false
+	trueBool := true
+	provider := &mockDNSProvider{
+		records: map[string][]libdns.Record{
+			"example.com.": {
+				libdns.Address{Name: "sub", IP: netip.MustParseAddr("192.0.2.1")},
+			},
+		},
+	}
+	app := App{
+		Versions:    IPVersions{IPv4: &trueBool, IPv6: &falseBool},
+		dnsProvider: provider,
+		ctx:         caddy.Context{},
+		logger:      zap.NewNop(),
+	}
+
+	ips, err := app.lookupCurrentIPsFromDNS(map[string][]string{
+		"example.com.": {"sub"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	absName := libdns.AbsoluteName("sub", "example.com.")
+
+	a, ok := ips[absName]["A"]
+	if !ok {
+		t.Fatal("expected A record to be looked up with IPv4 enabled")
+	}
+	if len(a) != 1 || a[0] != netip.MustParseAddr("192.0.2.1") {
+		t.Errorf("expected A record 192.0.2.1, got %v", a)
+	}
+
+	if _, ok := ips[absName]["AAAA"]; ok {
+		t.Error("expected no AAAA record lookup when only IPv4 is enabled")
 	}
 }
