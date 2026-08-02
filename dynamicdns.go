@@ -76,8 +76,19 @@ type App struct {
 	// The TTL to set on DNS records.
 	TTL caddy.Duration `json:"ttl,omitempty"`
 
-	// If enabled, DNS records for domains removed from config will be deleted.
-	// This only works if the DNS provider implements libdns.RecordDeleter.
+	// DeleteOrphans deletes DNS records that were previously managed by
+	// caddy-dynamicdns but are no longer present in the current configuration.
+	//
+	// WARNING: this is a destructive option. It assumes caddy-dynamicdns is
+	// the only system managing records in the configured zones, and that the
+	// state persisted in storage is always correct. Any A/AAAA records that
+	// caddy-dynamicdns tracked but that are absent from the current
+	// configuration will be deleted — including records that were created or
+	// modified outside of caddy-dynamicdns after they were first tracked.
+	// Do not enable this if other systems (or manual edits) manage records in
+	// the same zones.
+	//
+	// Only takes effect if the DNS provider implements libdns.RecordDeleter.
 	DeleteOrphans bool `json:"delete_orphans,omitempty"`
 
 	ipSources   []IPSource
