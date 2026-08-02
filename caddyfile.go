@@ -47,6 +47,16 @@ func init() {
 //	}
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
+//
+// The delete_orphans option deletes DNS records that were previously managed
+// by caddy-dynamicdns but are no longer present in the configuration.
+//
+// WARNING: delete_orphans is destructive. It assumes caddy-dynamicdns is the
+// only system managing records in the configured zones, and that its
+// persisted state is always correct. Records it previously tracked will be
+// deleted once they leave the configuration, even if they were later created
+// or modified outside of caddy-dynamicdns (e.g. by hand or another tool).
+// Only enable it for zones that no other system manages.
 func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 	app := new(App)
 

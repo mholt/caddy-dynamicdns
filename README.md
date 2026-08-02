@@ -296,8 +296,10 @@ Equivalent JSON config:
 
 When using `dynamic_domains`, if you remove a domain from your Caddyfile, the DNS record will remain in your DNS provider. The `delete_orphans` option will automatically delete DNS records for domains that are no longer in your configuration.
 
+> **Warning**: `delete_orphans` is destructive. It assumes caddy-dynamicdns is the **only** system managing records in the configured zones, and that its persisted state is always correct. Any A/AAAA records that caddy-dynamicdns previously tracked will be deleted as soon as they leave your configuration — even if they were created or modified by hand, or by another system, after caddy-dynamicdns first started tracking them. Do **not** enable this option for zones that are also managed by other tools, other Caddy instances, or manual edits.
+
 Note:
-* Only records that were previously managed by caddy-dynamicdns will be deleted. Manually created DNS records are safe.
+* Only records that were previously tracked by caddy-dynamicdns can be deleted; records it never tracked are left alone. However, once a record is tracked, later changes made outside caddy-dynamicdns will not protect it from deletion when it is removed from the configuration.
 * The DNS provider must implement the `libdns.RecordDeleter` interface.
 * State is persisted to Caddy's storage (works with any storage provider) so orphans are detected even after Caddy restarts.
 
