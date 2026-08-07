@@ -46,11 +46,22 @@ func init() {
 //		exclude <CIDRs ...>
 //		update_only
 //		dynamic_domains
+//		delete_orphans
 //		versions ipv4|ipv6
 //		ttl <duration>
 //	}
 //
 // If <names...> are omitted after <zone>, then "@" will be assumed.
+//
+// The delete_orphans option deletes DNS records that were previously managed
+// by caddy-dynamicdns but are no longer present in the configuration.
+//
+// WARNING: delete_orphans is destructive. It assumes caddy-dynamicdns is the
+// only system managing records in the configured zones, and that its
+// persisted state is always correct. Records it previously tracked will be
+// deleted once they leave the configuration, even if they were later created
+// or modified outside of caddy-dynamicdns (e.g. by hand or another tool).
+// Only enable it for zones that no other system manages.
 //
 // The provider directive may be repeated to update domains across multiple
 // DNS providers, or multiple accounts of the same provider. In that case,
@@ -84,6 +95,12 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 				return nil, d.ArgErr()
 			}
 			app.DynamicDomains = true
+
+		case "delete_orphans":
+			if d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			app.DeleteOrphans = true
 
 		case "check_interval":
 			if !d.NextArg() {

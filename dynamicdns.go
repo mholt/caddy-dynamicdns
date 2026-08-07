@@ -15,6 +15,7 @@
 package dynamicdns
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/netip"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/caddyserver/certmagic"
 	"github.com/libdns/libdns"
 	"go.uber.org/zap"
 )
@@ -85,6 +87,21 @@ type App struct {
 	// The TTL to set on DNS records.
 	TTL caddy.Duration `json:"ttl,omitempty"`
 
+	// DeleteOrphans deletes DNS records that were previously managed by
+	// caddy-dynamicdns but are no longer present in the current configuration.
+	//
+	// WARNING: this is a destructive option. It assumes caddy-dynamicdns is
+	// the only system managing records in the configured zones, and that the
+	// state persisted in storage is always correct. Any A/AAAA records that
+	// caddy-dynamicdns tracked but that are absent from the current
+	// configuration will be deleted — including records that were created or
+	// modified outside of caddy-dynamicdns after they were first tracked.
+	// Do not enable this if other systems (or manual edits) manage records in
+	// the same zones.
+	//
+	// Only takes effect if the DNS provider implements libdns.RecordDeleter.
+	DeleteOrphans bool `json:"delete_orphans,omitempty"`
+
 	ipSources []IPSource
 
 	ctx    caddy.Context
@@ -137,6 +154,16 @@ func (a *App) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("loading DNS provider module: %v", err)
 		}
 		a.Providers[i].dnsProvider = val.(libdns.RecordSetter)
+	}
+
+	// warn if delete_orphans is enabled but a provider doesn't support it
+	if a.DeleteOrphans {
+		for i := range a.Providers {
+			if _, ok := a.Providers[i].dnsProvider.(libdns.RecordDeleter); !ok {
+				a.logger.Warn("delete_orphans is enabled but DNS provider does not implement libdns.RecordDeleter; orphan cleanup will be disabled",
+					zap.Int("provider", i))
+			}
+		}
 	}
 
 	// set up the IP source module or use a default
@@ -258,6 +285,21 @@ func (a App) checkIPAndUpdateDNS() error {
 
 	var err error
 
+	// When DeleteOrphans is enabled, restore the previously managed domains
+	// from storage so that domains removed from the configuration can be
+	// detected as orphans (e.g., after a restart).
+	if a.DeleteOrphans && lastIPs == nil {
+		storedState := loadManagedDomainsState(a.ctx, a.ctx.Storage(), a.logger)
+		for domain, types := range storedState {
+			if lastIPs == nil {
+				lastIPs = make(domainTypeIPs)
+			}
+			lastIPs[domain] = types
+			a.logger.Debug("restored domain from storage for orphan detection",
+				zap.String("domain", domain))
+		}
+	}
+
 	// Lookup current address(es) from first successful IP source
 	var currentIPs []netip.Addr
 	for _, ipSrc := range a.ipSources {
@@ -285,6 +327,15 @@ func (a App) checkIPAndUpdateDNS() error {
 	// update the DNS records of each provider's domains
 	for i := range a.Providers {
 		a.updateProviderDNS(&a.Providers[i], currentIPs)
+	}
+
+	// delete DNS records that are no longer managed, and persist the
+	// managed domains state for orphan detection after a restart
+	if a.DeleteOrphans {
+		for i := range a.Providers {
+			a.deleteOrphanedRecords(a.ctx, &a.Providers[i], a.allDomainsFor(&a.Providers[i]))
+		}
+		saveManagedDomainsState(a.ctx, a.ctx.Storage(), lastIPs, a.logger)
 	}
 
 	return nil
@@ -408,6 +459,78 @@ func (a App) seedLastIPsFromDNS(p *Provider, allDomains map[string][]string) {
 	}
 }
 
+// deleteOrphanedRecords deletes DNS records for domains that are no longer
+// in the configuration. Returns true if any records were deleted.
+func (a App) deleteOrphanedRecords(ctx context.Context, p *Provider, allDomains map[string][]string) bool {
+	if !a.DeleteOrphans || lastIPs == nil {
+		return false
+	}
+
+	deleter, ok := p.dnsProvider.(libdns.RecordDeleter)
+	if !ok {
+		return false
+	}
+
+	// Build set of current absolute domain names
+	currentAbsNames := make(map[string]bool)
+	for zone, names := range allDomains {
+		for _, name := range names {
+			currentAbsNames[libdns.AbsoluteName(name, zone)] = true
+		}
+	}
+
+	orphansDeleted := false
+	for absName, typeIPs := range lastIPs {
+		if currentAbsNames[absName] {
+			continue // Still in config, not orphaned
+		}
+
+		// Find the zone of this provider that the orphaned domain belongs
+		// to; domains of other providers are left alone.
+		var zone string
+		for z := range allDomains {
+			if absName == z || strings.HasSuffix(absName, "."+z) {
+				zone = z
+				break
+			}
+		}
+		if zone == "" {
+			continue
+		}
+
+		// Build records to delete
+		var recsToDelete []libdns.Record
+		name := strings.TrimSuffix(absName, "."+zone)
+		if name == absName {
+			name = "@"
+		}
+
+		for _, ips := range typeIPs {
+			for _, ip := range ips {
+				if ip.IsValid() {
+					recsToDelete = append(recsToDelete, libdns.Address{Name: name, IP: ip})
+				}
+			}
+		}
+
+		if len(recsToDelete) > 0 {
+			if _, err := deleter.DeleteRecords(ctx, zone, recsToDelete); err != nil {
+				a.logger.Error("failed to delete orphaned DNS record",
+					zap.String("domain", absName),
+					zap.Error(err))
+			} else {
+				a.logger.Info("deleted orphaned DNS record",
+					zap.String("zone", zone),
+					zap.String("domain", absName))
+				orphansDeleted = true
+			}
+		}
+		delete(lastIPs, absName)
+	}
+
+	return orphansDeleted
+}
+
 // lookupCurrentIPsFromDNS looks up the current IP addresses
 // from the provider's DNS records.
 func (a App) lookupCurrentIPsFromDNS(p *Provider, domains map[string][]string) (domainTypeIPs, error) {
@@ -438,7 +561,15 @@ func (a App) lookupCurrentIPsFromDNS(p *Provider, domains map[string][]string) (
 			for _, n := range names {
 				name := libdns.AbsoluteName(n, zone)
 				ips := make(map[string][]netip.Addr)
-				for _, t := range []string{recordTypeA, recordTypeAAAA} {
+				// Only look up record types that are enabled in Versions
+				var typesToCheck []string
+				if a.Versions.V4Enabled() {
+					typesToCheck = append(typesToCheck, recordTypeA)
+				}
+				if a.Versions.V6Enabled() {
+					typesToCheck = append(typesToCheck, recordTypeAAAA)
+				}
+				for _, t := range typesToCheck {
 					if ip, ok := recMap[name][t]; ok {
 						ips[t] = []netip.Addr{ip}
 					} else {
@@ -647,6 +778,87 @@ const (
 )
 
 const defaultCheckInterval = 30 * time.Minute
+
+// Storage key for persisting managed domains state
+const managedDomainsStorageKey = "dynamic_dns/managed_domains.json"
+
+// managedDomainsState is the structure persisted to storage
+type managedDomainsState struct {
+	// LastUpdated is the timestamp when this state was last saved
+	LastUpdated time.Time `json:"last_updated"`
+	// Domains maps absolute domain names to their record types and IPs
+	Domains map[string]map[string][]string `json:"domains"`
+}
+
+// loadManagedDomainsState loads the managed domains state from storage
+func loadManagedDomainsState(ctx context.Context, storage certmagic.Storage, logger *zap.Logger) domainTypeIPs {
+	data, err := storage.Load(ctx, managedDomainsStorageKey)
+	if err != nil {
+		// File doesn't exist or other error - that's fine on first run
+		logger.Debug("no managed domains state found in storage", zap.Error(err))
+		return nil
+	}
+
+	var state managedDomainsState
+	if err := json.Unmarshal(data, &state); err != nil {
+		logger.Error("failed to unmarshal managed domains state", zap.Error(err))
+		return nil
+	}
+
+	// Convert string IPs back to netip.Addr
+	result := make(domainTypeIPs)
+	for domain, types := range state.Domains {
+		result[domain] = make(map[string][]netip.Addr)
+		for recType, ips := range types {
+			for _, ipStr := range ips {
+				if ip, err := netip.ParseAddr(ipStr); err == nil {
+					result[domain][recType] = append(result[domain][recType], ip)
+				}
+			}
+		}
+	}
+
+	logger.Info("loaded managed domains state from storage",
+		zap.Int("count", len(result)),
+		zap.Time("last_updated", state.LastUpdated))
+	return result
+}
+
+// saveManagedDomainsState saves the managed domains state to storage
+func saveManagedDomainsState(ctx context.Context, storage certmagic.Storage, domains domainTypeIPs, logger *zap.Logger) {
+	if domains == nil {
+		return
+	}
+
+	// Convert netip.Addr to strings for JSON serialization
+	state := managedDomainsState{
+		LastUpdated: time.Now().UTC(),
+		Domains:     make(map[string]map[string][]string),
+	}
+	for domain, types := range domains {
+		state.Domains[domain] = make(map[string][]string)
+		for recType, ips := range types {
+			for _, ip := range ips {
+				if ip.IsValid() {
+					state.Domains[domain][recType] = append(state.Domains[domain][recType], ip.String())
+				}
+			}
+		}
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		logger.Error("failed to marshal managed domains state", zap.Error(err))
+		return
+	}
+
+	if err := storage.Store(ctx, managedDomainsStorageKey, data); err != nil {
+		logger.Error("failed to save managed domains state", zap.Error(err))
+		return
+	}
+
+	logger.Debug("saved managed domains state to storage", zap.Int("count", len(domains)))
+}
 
 // Interface guards
 var (
