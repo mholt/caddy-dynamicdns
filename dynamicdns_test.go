@@ -1,3 +1,4 @@
+// Copyright 2020 Matthew Holt
 // Copyright 2026 Nils Stein
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +26,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/certmagic"
+	"github.com/google/go-cmp/cmp"
 	"github.com/libdns/libdns"
 	"go.uber.org/zap"
 )
@@ -390,6 +392,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 func TestDeleteOrphanedRecords_Disabled(t *testing.T) {
 	app := App{
 		DeleteOrphans: false,
+		Providers:     []Provider{{dnsProvider: &mockDNSProvider{}}},
 		logger:        zap.NewNop(),
 	}
 
@@ -404,7 +407,7 @@ func TestDeleteOrphanedRecords_Disabled(t *testing.T) {
 		"example.com.": {"@"},
 	}
 
-	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+	result := app.deleteOrphanedRecords(context.Background(), &app.Providers[0], allDomains)
 
 	if result {
 		t.Error("expected false when DeleteOrphans is disabled")
@@ -414,6 +417,7 @@ func TestDeleteOrphanedRecords_Disabled(t *testing.T) {
 func TestDeleteOrphanedRecords_NilLastIPs(t *testing.T) {
 	app := App{
 		DeleteOrphans: true,
+		Providers:     []Provider{{dnsProvider: &mockDNSProvider{}}},
 		logger:        zap.NewNop(),
 	}
 
@@ -423,7 +427,7 @@ func TestDeleteOrphanedRecords_NilLastIPs(t *testing.T) {
 		"example.com.": {"@"},
 	}
 
-	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+	result := app.deleteOrphanedRecords(context.Background(), &app.Providers[0], allDomains)
 
 	if result {
 		t.Error("expected false when lastIPs is nil")
@@ -433,7 +437,7 @@ func TestDeleteOrphanedRecords_NilLastIPs(t *testing.T) {
 func TestDeleteOrphanedRecords_ProviderNoDeleteSupport(t *testing.T) {
 	app := App{
 		DeleteOrphans: true,
-		dnsProvider:   &mockDNSProviderNoDelete{},
+		Providers:     []Provider{{dnsProvider: &mockDNSProviderNoDelete{}}},
 		logger:        zap.NewNop(),
 	}
 
@@ -447,7 +451,7 @@ func TestDeleteOrphanedRecords_ProviderNoDeleteSupport(t *testing.T) {
 		"example.com.": {"@"},
 	}
 
-	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+	result := app.deleteOrphanedRecords(context.Background(), &app.Providers[0], allDomains)
 
 	if result {
 		t.Error("expected false when provider doesn't support RecordDeleter")
@@ -458,7 +462,7 @@ func TestDeleteOrphanedRecords_DomainStillInConfig(t *testing.T) {
 	provider := &mockDNSProvider{}
 	app := App{
 		DeleteOrphans: true,
-		dnsProvider:   provider,
+		Providers:     []Provider{{dnsProvider: provider}},
 		logger:        zap.NewNop(),
 	}
 
@@ -473,7 +477,7 @@ func TestDeleteOrphanedRecords_DomainStillInConfig(t *testing.T) {
 		"example.com.": {"sub"},
 	}
 
-	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+	result := app.deleteOrphanedRecords(context.Background(), &app.Providers[0], allDomains)
 
 	if result {
 		t.Error("expected false when domain is still in config")
@@ -487,7 +491,7 @@ func TestDeleteOrphanedRecords_DeletesOrphan(t *testing.T) {
 	provider := &mockDNSProvider{}
 	app := App{
 		DeleteOrphans: true,
-		dnsProvider:   provider,
+		Providers:     []Provider{{dnsProvider: provider}},
 		logger:        zap.NewNop(),
 	}
 
@@ -502,7 +506,7 @@ func TestDeleteOrphanedRecords_DeletesOrphan(t *testing.T) {
 		"example.com.": {"@"},
 	}
 
-	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+	result := app.deleteOrphanedRecords(context.Background(), &app.Providers[0], allDomains)
 
 	if !result {
 		t.Error("expected true when orphan is deleted")
@@ -521,7 +525,7 @@ func TestDeleteOrphanedRecords_DeleteError(t *testing.T) {
 	}
 	app := App{
 		DeleteOrphans: true,
-		dnsProvider:   provider,
+		Providers:     []Provider{{dnsProvider: provider}},
 		logger:        zap.NewNop(),
 	}
 
@@ -535,7 +539,7 @@ func TestDeleteOrphanedRecords_DeleteError(t *testing.T) {
 		"example.com.": {"@"},
 	}
 
-	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+	result := app.deleteOrphanedRecords(context.Background(), &app.Providers[0], allDomains)
 
 	// Should return false because delete failed
 	if result {
@@ -551,7 +555,7 @@ func TestDeleteOrphanedRecords_MultipleOrphans(t *testing.T) {
 	provider := &mockDNSProvider{}
 	app := App{
 		DeleteOrphans: true,
-		dnsProvider:   provider,
+		Providers:     []Provider{{dnsProvider: provider}},
 		logger:        zap.NewNop(),
 	}
 
@@ -573,7 +577,7 @@ func TestDeleteOrphanedRecords_MultipleOrphans(t *testing.T) {
 		"example.com.": {"keep"},
 	}
 
-	result := app.deleteOrphanedRecords(context.Background(), allDomains)
+	result := app.deleteOrphanedRecords(context.Background(), &app.Providers[0], allDomains)
 
 	if !result {
 		t.Error("expected true when orphans are deleted")
@@ -603,13 +607,12 @@ func TestLookupCurrentIPsFromDNS_OnlyIPv6Enabled(t *testing.T) {
 		},
 	}
 	app := App{
-		Versions:    IPVersions{IPv4: &falseBool, IPv6: &trueBool},
-		dnsProvider: provider,
-		ctx:         caddy.Context{},
-		logger:      zap.NewNop(),
+		Versions: IPVersions{IPv4: &falseBool, IPv6: &trueBool},
+		ctx:      caddy.Context{},
+		logger:   zap.NewNop(),
 	}
 
-	ips, err := app.lookupCurrentIPsFromDNS(map[string][]string{
+	ips, err := app.lookupCurrentIPsFromDNS(&Provider{dnsProvider: provider}, map[string][]string{
 		"example.com.": {"sub"},
 	})
 	if err != nil {
@@ -644,13 +647,12 @@ func TestLookupCurrentIPsFromDNS_OnlyIPv4Enabled(t *testing.T) {
 		},
 	}
 	app := App{
-		Versions:    IPVersions{IPv4: &trueBool, IPv6: &falseBool},
-		dnsProvider: provider,
-		ctx:         caddy.Context{},
-		logger:      zap.NewNop(),
+		Versions: IPVersions{IPv4: &trueBool, IPv6: &falseBool},
+		ctx:      caddy.Context{},
+		logger:   zap.NewNop(),
 	}
 
-	ips, err := app.lookupCurrentIPsFromDNS(map[string][]string{
+	ips, err := app.lookupCurrentIPsFromDNS(&Provider{dnsProvider: provider}, map[string][]string{
 		"example.com.": {"sub"},
 	})
 	if err != nil {
@@ -669,5 +671,112 @@ func TestLookupCurrentIPsFromDNS_OnlyIPv4Enabled(t *testing.T) {
 
 	if _, ok := ips[absName]["AAAA"]; ok {
 		t.Error("expected no AAAA record lookup when only IPv4 is enabled")
+	}
+}
+
+func Test_NormalizeProviders(t *testing.T) {
+	provider1 := json.RawMessage(`{"name":"test_dummy","arg":"one"}`)
+	provider2 := json.RawMessage(`{"name":"test_dummy","arg":"two"}`)
+	domains1 := map[string][]string{"example.com": {"@"}}
+	domains2 := map[string][]string{"example.org": {"@", "www"}}
+
+	tests := []struct {
+		name    string
+		app     App
+		want    []Provider
+		wantErr bool
+	}{
+		{
+			name: "legacy: top-level provider and domains",
+			app: App{
+				DNSProviderRaw: provider1,
+				Domains:        domains1,
+			},
+			want: []Provider{
+				{DNSProviderRaw: provider1, Domains: domains1},
+			},
+		},
+		{
+			name: "legacy top-level provider combined with providers list",
+			app: App{
+				DNSProviderRaw: provider1,
+				Domains:        domains1,
+				Providers: []Provider{
+					{DNSProviderRaw: provider2, Domains: domains2},
+				},
+			},
+			want: []Provider{
+				{DNSProviderRaw: provider1, Domains: domains1},
+				{DNSProviderRaw: provider2, Domains: domains2},
+			},
+		},
+		{
+			name: "top-level domains fold into a sole provider without domains",
+			app: App{
+				Domains: domains1,
+				Providers: []Provider{
+					{DNSProviderRaw: provider1},
+				},
+			},
+			want: []Provider{
+				{DNSProviderRaw: provider1, Domains: domains1},
+			},
+		},
+		{
+			name: "providers list only",
+			app: App{
+				Providers: []Provider{
+					{DNSProviderRaw: provider1, Domains: domains1},
+					{DNSProviderRaw: provider2, Domains: domains2},
+				},
+			},
+			want: []Provider{
+				{DNSProviderRaw: provider1, Domains: domains1},
+				{DNSProviderRaw: provider2, Domains: domains2},
+			},
+		},
+		{
+			name: "top-level domains conflict with per-provider domains",
+			app: App{
+				Domains: domains1,
+				Providers: []Provider{
+					{DNSProviderRaw: provider1, Domains: domains2},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "top-level domains with multiple providers",
+			app: App{
+				Domains: domains1,
+				Providers: []Provider{
+					{DNSProviderRaw: provider1},
+					{DNSProviderRaw: provider2},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name:    "no provider",
+			app:     App{Domains: domains1},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.app.normalizeProviders()
+			if err != nil {
+				if !tt.wantErr {
+					t.Errorf("normalizeProviders() error = %v, wantErr %v", err, tt.wantErr)
+				}
+				return
+			}
+			if tt.wantErr {
+				t.Fatal("normalizeProviders() expected error, got none")
+			}
+			if diff := cmp.Diff(tt.app.Providers, tt.want, cmp.AllowUnexported(Provider{})); diff != "" {
+				t.Errorf("normalizeProviders() diff(-got +want):\n%s", diff)
+			}
+		})
 	}
 }

@@ -43,7 +43,8 @@ type App struct {
 	IPSourcesRaw []json.RawMessage `json:"ip_sources,omitempty" caddy:"namespace=dynamic_dns.ip_sources inline_key=source"`
 
 	// The configuration for the DNS provider with which the DNS
-	// records will be updated.
+	// records will be updated. If set, it is treated as a single
+	// entry in Providers, together with the top-level Domains.
 	DNSProviderRaw json.RawMessage `json:"dns_provider,omitempty" caddy:"namespace=dns.providers inline_key=name"`
 
 	// The record names, keyed by DNS zone, for which to update the A/AAAA records.
@@ -53,7 +54,17 @@ type App struct {
 	// For example, assuming your zone is example.com, and you want to update A/AAAA
 	// records for "example.com" and "www.example.com" so that they resolve to this
 	// Caddy instance, configure like so: `"example.com": ["@", "www"]`
+	//
+	// These domains belong to the DNS provider configured by dns_provider.
+	// When using multiple providers, configure domains per entry in Providers
+	// instead.
 	Domains map[string][]string `json:"domains,omitempty"`
+
+	// The list of DNS providers, each managing its own set of domains.
+	// This allows updating DNS records across multiple DNS providers, or
+	// multiple accounts of the same provider. The dns_provider and domains
+	// fields above are equivalent to a single entry in this list.
+	Providers []Provider `json:"providers,omitempty"`
 
 	// If enabled, no new DNS records will be created. Only existing records will be updated.
 	// This means that the A or AAAA records need to be created manually ahead of time.
@@ -91,11 +102,29 @@ type App struct {
 	// Only takes effect if the DNS provider implements libdns.RecordDeleter.
 	DeleteOrphans bool `json:"delete_orphans,omitempty"`
 
-	ipSources   []IPSource
-	dnsProvider libdns.RecordSetter
+	ipSources []IPSource
 
 	ctx    caddy.Context
 	logger *zap.Logger
+}
+
+// Provider associates a DNS provider with the record names,
+// keyed by DNS zone, that it manages.
+type Provider struct {
+	// The configuration for the DNS provider with which the DNS
+	// records will be updated.
+	DNSProviderRaw json.RawMessage `json:"dns_provider,omitempty" caddy:"namespace=dns.providers inline_key=name"`
+
+	// The record names, keyed by DNS zone, for which to update the A/AAAA records.
+	// Record names are relative to the zone. The zone is usually your registered
+	// domain name. To refer to the zone itself, use the record name of "@".
+	//
+	// For example, assuming your zone is example.com, and you want to update A/AAAA
+	// records for "example.com" and "www.example.com" so that they resolve to this
+	// Caddy instance, configure like so: `"example.com": ["@", "www"]`
+	Domains map[string][]string `json:"domains,omitempty"`
+
+	dnsProvider libdns.RecordSetter
 }
 
 // CaddyModule returns the Caddy module information.
@@ -111,20 +140,29 @@ func (a *App) Provision(ctx caddy.Context) error {
 	a.ctx = ctx
 	a.logger = ctx.Logger(a)
 
-	// set up the DNS provider module
-	if len(a.DNSProviderRaw) == 0 {
-		return fmt.Errorf("a DNS provider is required")
+	if err := a.normalizeProviders(); err != nil {
+		return err
 	}
-	val, err := ctx.LoadModule(a, "DNSProviderRaw")
-	if err != nil {
-		return fmt.Errorf("loading DNS provider module: %v", err)
-	}
-	a.dnsProvider = val.(libdns.RecordSetter)
 
-	// warn if delete_orphans is enabled but provider doesn't support it
+	// set up the DNS provider modules
+	for i := range a.Providers {
+		if len(a.Providers[i].DNSProviderRaw) == 0 {
+			return fmt.Errorf("provider %d: a DNS provider is required", i)
+		}
+		val, err := ctx.LoadModule(&a.Providers[i], "DNSProviderRaw")
+		if err != nil {
+			return fmt.Errorf("loading DNS provider module: %v", err)
+		}
+		a.Providers[i].dnsProvider = val.(libdns.RecordSetter)
+	}
+
+	// warn if delete_orphans is enabled but a provider doesn't support it
 	if a.DeleteOrphans {
-		if _, ok := a.dnsProvider.(libdns.RecordDeleter); !ok {
-			a.logger.Warn("delete_orphans is enabled but DNS provider does not implement libdns.RecordDeleter; orphan cleanup will be disabled")
+		for i := range a.Providers {
+			if _, ok := a.Providers[i].dnsProvider.(libdns.RecordDeleter); !ok {
+				a.logger.Warn("delete_orphans is enabled but DNS provider does not implement libdns.RecordDeleter; orphan cleanup will be disabled",
+					zap.Int("provider", i))
+			}
 		}
 	}
 
@@ -140,7 +178,7 @@ func (a *App) Provision(ctx caddy.Context) error {
 	}
 	if len(a.ipSources) == 0 {
 		var sh SimpleHTTP
-		if err = sh.Provision(ctx); err != nil {
+		if err := sh.Provision(ctx); err != nil {
 			return err
 		}
 		a.ipSources = []IPSource{sh}
@@ -154,6 +192,27 @@ func (a *App) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("check interval must be at least 1 second")
 	}
 
+	return nil
+}
+
+// normalizeProviders folds the legacy single-provider config (top-level
+// dns_provider and domains) into the providers list and validates the
+// result.
+func (a *App) normalizeProviders() error {
+	if len(a.DNSProviderRaw) > 0 {
+		a.Providers = append([]Provider{{DNSProviderRaw: a.DNSProviderRaw, Domains: a.Domains}}, a.Providers...)
+	} else if len(a.Domains) > 0 {
+		// top-level domains without a top-level provider can only belong
+		// to a sole provider that has no domains of its own
+		if len(a.Providers) == 1 && a.Providers[0].Domains == nil {
+			a.Providers[0].Domains = a.Domains
+		} else {
+			return fmt.Errorf("with multiple providers, domains must be configured per provider")
+		}
+	}
+	if len(a.Providers) == 0 {
+		return fmt.Errorf("a DNS provider is required")
+	}
 	return nil
 }
 
@@ -226,36 +285,20 @@ func (a App) checkIPAndUpdateDNS() error {
 
 	var err error
 
-	allDomains := a.allDomains()
-
-	// If we don't know current IPs, look them up from DNS and load stored state
-	firstRun := lastIPs == nil
-	if firstRun {
-		lastIPs, err = a.lookupCurrentIPsFromDNS(allDomains)
-		if err != nil {
-			// not the end of the world, but might be an extra initial API hit with the DNS provider
-			a.logger.Error("unable to lookup current IPs from DNS records", zap.Error(err))
-		}
-		a.logger.Debug("looked up current IPs from DNS", zap.Any("lastIPs", lastIPs))
-
-		// When DeleteOrphans is enabled, also load previously managed domains from storage
-		// to detect orphans from previous runs (e.g., after Caddy restart)
-		if a.DeleteOrphans {
-			storage := a.ctx.Storage()
-			storedState := loadManagedDomainsState(a.ctx, storage, a.logger)
-			// Merge stored state into lastIPs (stored state may have domains not in current config)
-			for domain, types := range storedState {
-				if _, exists := lastIPs[domain]; !exists {
-					lastIPs[domain] = types
-					a.logger.Debug("restored domain from storage for orphan detection",
-						zap.String("domain", domain))
-				}
+	// When DeleteOrphans is enabled, restore the previously managed domains
+	// from storage so that domains removed from the configuration can be
+	// detected as orphans (e.g., after a restart).
+	if a.DeleteOrphans && lastIPs == nil {
+		storedState := loadManagedDomainsState(a.ctx, a.ctx.Storage(), a.logger)
+		for domain, types := range storedState {
+			if lastIPs == nil {
+				lastIPs = make(domainTypeIPs)
 			}
+			lastIPs[domain] = types
+			a.logger.Debug("restored domain from storage for orphan detection",
+				zap.String("domain", domain))
 		}
 	}
-
-	// Delete orphaned DNS records (domains that were removed from config)
-	orphansDeleted := a.deleteOrphanedRecords(a.ctx, allDomains)
 
 	// Lookup current address(es) from first successful IP source
 	var currentIPs []netip.Addr
@@ -280,6 +323,32 @@ func (a App) checkIPAndUpdateDNS() error {
 
 	// make sure the source returns tidy info; duplicates are wasteful
 	currentIPs = removeDuplicateIPs(currentIPs)
+
+	// update the DNS records of each provider's domains
+	for i := range a.Providers {
+		a.updateProviderDNS(&a.Providers[i], currentIPs)
+	}
+
+	// delete DNS records that are no longer managed, and persist the
+	// managed domains state for orphan detection after a restart
+	if a.DeleteOrphans {
+		for i := range a.Providers {
+			a.deleteOrphanedRecords(a.ctx, &a.Providers[i], a.allDomainsFor(&a.Providers[i]))
+		}
+		saveManagedDomainsState(a.ctx, a.ctx.Storage(), lastIPs, a.logger)
+	}
+
+	return nil
+}
+
+// updateProviderDNS diffs currentIPs against the last known IPs of the
+// provider's domains and updates the DNS records that are different.
+// Failures are logged.
+func (a App) updateProviderDNS(p *Provider, currentIPs []netip.Addr) {
+	allDomains := a.allDomainsFor(p)
+
+	// if we don't know the current IPs of some domains, look them up from DNS
+	a.seedLastIPsFromDNS(p, allDomains)
 
 	// do a diff of current and previous IPs to make DNS records to update
 	updatedRecsByZone := make(map[string][]libdns.Address)
@@ -311,11 +380,7 @@ func (a App) checkIPAndUpdateDNS() error {
 
 	if len(updatedRecsByZone) == 0 {
 		a.logger.Debug("no IP address change; no update needed")
-		// Save state on first run (to create the file) or if orphans were deleted
-		if a.DeleteOrphans && (firstRun || orphansDeleted) {
-			saveManagedDomainsState(a.ctx, a.ctx.Storage(), lastIPs, a.logger)
-		}
-		return nil
+		return
 	}
 
 	for zone, addresses := range updatedRecsByZone {
@@ -330,7 +395,7 @@ func (a App) checkIPAndUpdateDNS() error {
 			)
 			records[i] = rec
 		}
-		if _, err = a.dnsProvider.SetRecords(a.ctx, zone, records); err != nil {
+		if _, err := p.dnsProvider.SetRecords(a.ctx, zone, records); err != nil {
 			a.logger.Error("failed setting DNS record(s) with new IP address(es)",
 				zap.String("zone", zone),
 				zap.Error(err),
@@ -354,23 +419,54 @@ func (a App) checkIPAndUpdateDNS() error {
 	}
 	a.logger.Info("finished updating DNS",
 		zap.Strings("current_ips", currentIPStrings))
+}
 
-	// Save managed domains state to storage for orphan detection after restart
-	if a.DeleteOrphans {
-		saveManagedDomainsState(a.ctx, a.ctx.Storage(), lastIPs, a.logger)
+// seedLastIPsFromDNS looks up, from the provider's DNS records, the current
+// IPs of any of the provider's domains that have not been seeded yet, so
+// that records which are already correct are not redundantly updated.
+func (a App) seedLastIPsFromDNS(p *Provider, allDomains map[string][]string) {
+	unseeded := make(map[string][]string)
+	for zone, names := range allDomains {
+		for _, name := range names {
+			if seededNames[libdns.AbsoluteName(name, zone)] {
+				continue
+			}
+			unseeded[zone] = append(unseeded[zone], name)
+		}
+	}
+	if len(unseeded) == 0 {
+		return
 	}
 
-	return nil
+	ips, err := a.lookupCurrentIPsFromDNS(p, unseeded)
+	if err != nil {
+		// not the end of the world, but might be an extra initial API hit with the DNS provider
+		a.logger.Error("unable to lookup current IPs from DNS records", zap.Error(err))
+		return
+	}
+	a.logger.Debug("looked up current IPs from DNS", zap.Any("lastIPs", ips))
+
+	if lastIPs == nil {
+		lastIPs = make(domainTypeIPs)
+	}
+	for name, typeIPs := range ips {
+		lastIPs[name] = typeIPs
+	}
+	for zone, names := range unseeded {
+		for _, name := range names {
+			seededNames[libdns.AbsoluteName(name, zone)] = true
+		}
+	}
 }
 
 // deleteOrphanedRecords deletes DNS records for domains that are no longer
 // in the configuration. Returns true if any records were deleted.
-func (a App) deleteOrphanedRecords(ctx context.Context, allDomains map[string][]string) bool {
+func (a App) deleteOrphanedRecords(ctx context.Context, p *Provider, allDomains map[string][]string) bool {
 	if !a.DeleteOrphans || lastIPs == nil {
 		return false
 	}
 
-	deleter, ok := a.dnsProvider.(libdns.RecordDeleter)
+	deleter, ok := p.dnsProvider.(libdns.RecordDeleter)
 	if !ok {
 		return false
 	}
@@ -389,37 +485,44 @@ func (a App) deleteOrphanedRecords(ctx context.Context, allDomains map[string][]
 			continue // Still in config, not orphaned
 		}
 
-		// Find zone for deletion (absName ends with zone)
-		for zone := range allDomains {
-			if absName == zone || strings.HasSuffix(absName, "."+zone) {
-				// Build records to delete
-				var recsToDelete []libdns.Record
-				name := strings.TrimSuffix(absName, "."+zone)
-				if name == absName {
-					name = "@"
-				}
-
-				for _, ips := range typeIPs {
-					for _, ip := range ips {
-						if ip.IsValid() {
-							recsToDelete = append(recsToDelete, libdns.Address{Name: name, IP: ip})
-						}
-					}
-				}
-
-				if len(recsToDelete) > 0 {
-					if _, err := deleter.DeleteRecords(ctx, zone, recsToDelete); err != nil {
-						a.logger.Error("failed to delete orphaned DNS record",
-							zap.String("domain", absName),
-							zap.Error(err))
-					} else {
-						a.logger.Info("deleted orphaned DNS record",
-							zap.String("zone", zone),
-							zap.String("domain", absName))
-						orphansDeleted = true
-					}
-				}
+		// Find the zone of this provider that the orphaned domain belongs
+		// to; domains of other providers are left alone.
+		var zone string
+		for z := range allDomains {
+			if absName == z || strings.HasSuffix(absName, "."+z) {
+				zone = z
 				break
+			}
+		}
+		if zone == "" {
+			continue
+		}
+
+		// Build records to delete
+		var recsToDelete []libdns.Record
+		name := strings.TrimSuffix(absName, "."+zone)
+		if name == absName {
+			name = "@"
+		}
+
+		for _, ips := range typeIPs {
+			for _, ip := range ips {
+				if ip.IsValid() {
+					recsToDelete = append(recsToDelete, libdns.Address{Name: name, IP: ip})
+				}
+			}
+		}
+
+		if len(recsToDelete) > 0 {
+			if _, err := deleter.DeleteRecords(ctx, zone, recsToDelete); err != nil {
+				a.logger.Error("failed to delete orphaned DNS record",
+					zap.String("domain", absName),
+					zap.Error(err))
+			} else {
+				a.logger.Info("deleted orphaned DNS record",
+					zap.String("zone", zone),
+					zap.String("domain", absName))
+				orphansDeleted = true
 			}
 		}
 		delete(lastIPs, absName)
@@ -429,12 +532,12 @@ func (a App) deleteOrphanedRecords(ctx context.Context, allDomains map[string][]
 }
 
 // lookupCurrentIPsFromDNS looks up the current IP addresses
-// from DNS records.
-func (a App) lookupCurrentIPsFromDNS(domains map[string][]string) (domainTypeIPs, error) {
+// from the provider's DNS records.
+func (a App) lookupCurrentIPsFromDNS(p *Provider, domains map[string][]string) (domainTypeIPs, error) {
 	// avoid duplicates
 	currentIPs := make(domainTypeIPs)
 
-	if recordGetter, ok := a.dnsProvider.(libdns.RecordGetter); ok {
+	if recordGetter, ok := p.dnsProvider.(libdns.RecordGetter); ok {
 		for zone, names := range domains {
 			recs, err := recordGetter.GetRecords(a.ctx, zone)
 			if err != nil {
@@ -505,20 +608,23 @@ func (a App) lookupManagedDomains() ([]string, error) {
 	return hosts, nil
 }
 
-func (a App) allDomains() map[string][]string {
+// allDomainsFor returns the domains managed by the provider, including
+// domains discovered from the "http" app's config if DynamicDomains is
+// enabled.
+func (a App) allDomainsFor(p *Provider) map[string][]string {
 	if !a.DynamicDomains {
-		return a.Domains
+		return p.Domains
 	}
 
 	// Read hosts from config.
 	m, err := a.lookupManagedDomains()
 	if err != nil {
-		return a.Domains
+		return p.Domains
 	}
 
 	a.logger.Info("Loaded dynamic domains", zap.Strings("domains", m))
 	d := make(map[string][]string)
-	for zone, domains := range a.Domains {
+	for zone, domains := range p.Domains {
 		d[zone] = domains
 		for _, h := range m {
 			name, ok := func() (string, bool) {
@@ -656,6 +762,11 @@ type domainTypeIPs map[string]map[string][]netip.Addr
 var (
 	lastIPs   domainTypeIPs
 	lastIPsMu sync.Mutex
+
+	// Tracks which domain names have had their current IPs
+	// seeded from DNS records, so that domains added by a
+	// config reload get seeded too. Guarded by lastIPsMu.
+	seededNames = make(map[string]bool)
 
 	// Special value indicate there is a new domain to manage.
 	nilIP netip.Addr

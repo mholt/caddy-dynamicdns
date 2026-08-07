@@ -127,6 +127,66 @@ Equivalent JSON config:
 </details>
 
 <details>
+<summary>Multiple providers</summary>
+
+The `provider` directive can be repeated to update domains across multiple DNS providers, or across multiple accounts of the same provider (e.g. different API credentials per domain). Each provider's domains are configured with a `domains` block *inside* that provider's block:
+
+```
+{
+	dynamic_dns {
+		provider cloudflare {env.CLOUDFLARE_API_TOKEN} {
+			domains {
+				example.com @ www
+			}
+		}
+		provider duckdns {env.DUCKDNS_API_TOKEN} {
+			domains {
+				example.duckdns.org @
+			}
+		}
+		check_interval 5m
+	}
+}
+```
+
+Inside a provider's block, the name `domains` is reserved for this app; everything else belongs to the DNS provider module as usual (whether inline arguments or block subdirectives). All other options (`ip_source`, `check_interval`, `versions`, `include`/`exclude`, `ttl`, `update_only`, `dynamic_domains`) remain global and apply to all providers.
+
+Equivalent JSON config:
+
+```json
+{
+	"apps": {
+		"dynamic_dns": {
+			"providers": [
+				{
+					"dns_provider": {
+						"name": "cloudflare",
+						"api_token": "{env.CLOUDFLARE_API_TOKEN}"
+					},
+					"domains": {
+						"example.com": ["@", "www"]
+					}
+				},
+				{
+					"dns_provider": {
+						"name": "duckdns",
+						"api_token": "{env.DUCKDNS_API_TOKEN}"
+					},
+					"domains": {
+						"example.duckdns.org": ["@"]
+					}
+				}
+			],
+			"check_interval": "5m"
+		}
+	}
+}
+```
+
+Note that repeating the whole `dynamic_dns` global option does **not** work — Caddy keeps only the last occurrence. Use multiple `provider` blocks within a single `dynamic_dns` option instead.
+</details>
+
+<details>
 <summary>Disabling IPv4</summary>
 
 To disable IPv4 lookups and use your unique global unicast IPv6 address, specify only IPv6 as the version you want enabled and use your machine interface to get the IP address:
