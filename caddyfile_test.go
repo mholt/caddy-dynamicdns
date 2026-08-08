@@ -243,6 +243,16 @@ func Test_ParseApp(t *testing.T) {
 			}`,
 		},
 		{
+			name: "ip ranges: invalid range",
+			d: caddyfile.NewTestDispenser(`
+				dynamic_dns {
+					include "192.168.10.0/100",
+					"versions": {}
+				}
+			`),
+			wantErr: true,
+		},
+		{
 			name: "provider: legacy single provider with top-level domains",
 			d: caddyfile.NewTestDispenser(`
 				dynamic_dns {
@@ -389,16 +399,6 @@ func Test_ParseApp(t *testing.T) {
 					provider test_dummy {
 						bogus
 					}
-				}
-			`),
-			wantErr: true,
-		},
-		{
-			name: "ip ranges: invalid range",
-			d: caddyfile.NewTestDispenser(`
-				dynamic_dns {
-					include "192.168.10.0/100",
-					"versions": {}
 				}
 			`),
 			wantErr: true,

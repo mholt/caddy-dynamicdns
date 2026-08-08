@@ -99,22 +99,26 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 			if !d.NextArg() {
 				return nil, d.ArgErr()
 			}
-			provName := d.Val()
-			modID := "dns.providers." + provName
+			providerName := d.Val()
+			modID := "dns.providers." + providerName
 
 			// the provider's block may contain a domains block reserved
 			// for this app; split it out and give the DNS provider module
 			// only its own tokens
 			var prov Provider
-			moduleTokens, err := splitProviderSegment(d.NextSegment(), &prov)
+			unm, err := unmarshalModule(d, modID, func(value string) (bool, error) {
+				if value != "domains" {
+					return false, nil
+				}
+				if err := parseDomains(d, &prov.Domains); err != nil {
+					return false, err
+				}
+				return true, nil
+			})
 			if err != nil {
 				return nil, err
 			}
-			unm, err := unmarshalModuleTokens(d, modID, moduleTokens)
-			if err != nil {
-				return nil, err
-			}
-			prov.DNSProviderRaw = caddyconfig.JSONModuleObject(unm, "name", provName, nil)
+			prov.DNSProviderRaw = caddyconfig.JSONModuleObject(unm, "name", providerName, nil)
 			app.Providers = append(app.Providers, prov)
 
 		case "ip_source":
@@ -214,66 +218,53 @@ func parseDomains(d *caddyfile.Dispenser, domains *map[string][]string) error {
 	return nil
 }
 
-// splitProviderSegment partitions the tokens of a provider directive's
-// segment (the provider module name through the end of its block) into
-// the tokens destined for the DNS provider module and the domains blocks
-// reserved by this app, which are parsed into prov. The returned tokens
-// are what remains for the DNS provider module to unmarshal.
-func splitProviderSegment(seg caddyfile.Segment, prov *Provider) ([]caddyfile.Token, error) {
-	d := caddyfile.NewDispenser(seg)
-
-	// the provider module name and its inline arguments
-	d.Next()
-	moduleTokens := []caddyfile.Token{d.Token()}
+// Similar to the (caddyfile.Dispenser).NextSegment(),
+// but allows other functions to consume intermediate blocks.
+// Since the boundaries are handled by internal functions, NewDispenser is not needed here.
+//
+//	consumer - Currently, used to handle domains
+func nextSegment(d *caddyfile.Dispenser, consumer func(value string) (bool, error)) (caddyfile.Segment, error) {
+	tkns := caddyfile.Segment{d.Token()}
 	for d.NextArg() {
-		moduleTokens = append(moduleTokens, d.Token())
+		tkns = append(tkns, d.Token())
 	}
-
-	var blockTokens []caddyfile.Token
-	var openBrace, closeBrace caddyfile.Token
-	inBlock := false
+	var openedBlock bool
 	for nesting := d.Nesting(); d.NextBlock(nesting); {
-		if !inBlock {
-			// NextBlock() consumed the open curly brace; rewind to
-			// capture it, so that the module's block can be rebuilt
-			// with its surrounding braces
+		if !openedBlock {
+			// because NextBlock() consumes the initial open
+			// curly brace, we rewind here to append it, since
+			// our case is special in that we want the new
+			// dispenser to have all the tokens including
+			// surrounding curly braces
 			d.Prev()
-			openBrace = d.Token()
+			tkns = append(tkns, d.Token())
 			d.Next()
-			inBlock = true
+			openedBlock = true
 		}
-		// the cursor is on a subdirective name; consume its whole
-		// segment so nested tokens are never mistaken for a
-		// subdirective of the provider block
-		if d.Val() == "domains" {
-			// reserved for this app
-			sub := caddyfile.NewDispenser(d.NextSegment())
-			sub.Next() // consume "domains"
-			if err := parseDomains(sub, &prov.Domains); err != nil {
-				return nil, err
-			}
+
+		ok, err := consumer(d.Val())
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			continue
 		}
-		// everything else belongs to the DNS provider module
-		blockTokens = append(blockTokens, d.NextSegment()...)
+
+		tkns = append(tkns, d.Token())
 	}
-	if inBlock {
-		closeBrace = d.Token()
-		// if the block contained only domains, leave the braces off
-		// so the module sees the same tokens as without a block
-		if len(blockTokens) > 0 {
-			moduleTokens = append(moduleTokens, openBrace)
-			moduleTokens = append(moduleTokens, blockTokens...)
-			moduleTokens = append(moduleTokens, closeBrace)
-		}
+	if openedBlock {
+		// include closing brace
+		tkns = append(tkns, d.Token())
+
+		// do not consume the closing curly brace; the
+		// next iteration of the enclosing loop will
+		// call Next() and consume it
 	}
-	return moduleTokens, nil
+	return tkns, nil
 }
 
-// unmarshalModuleTokens is like caddyfile.UnmarshalModule, except that it
-// unmarshals the module from an explicit list of tokens instead of from
-// the dispenser's next segment.
-func unmarshalModuleTokens(d *caddyfile.Dispenser, moduleID string, tokens []caddyfile.Token) (caddyfile.Unmarshaler, error) {
+// Similar to caddyfile.UnmarshalModule(), with consumer
+func unmarshalModule(d *caddyfile.Dispenser, moduleID string, consumer func(value string) (bool, error)) (caddyfile.Unmarshaler, error) {
 	mod, err := caddy.GetModule(moduleID)
 	if err != nil {
 		return nil, d.Errf("getting module named '%s': %v", moduleID, err)
@@ -283,7 +274,11 @@ func unmarshalModuleTokens(d *caddyfile.Dispenser, moduleID string, tokens []cad
 	if !ok {
 		return nil, d.Errf("module %s is not a Caddyfile unmarshaler; is %T", mod.ID, inst)
 	}
-	err = unm.UnmarshalCaddyfile(caddyfile.NewDispenser(tokens))
+	seg, err := nextSegment(d, consumer)
+	if err != nil {
+		return nil, err
+	}
+	err = unm.UnmarshalCaddyfile(caddyfile.NewDispenser(seg))
 	if err != nil {
 		return nil, err
 	}
