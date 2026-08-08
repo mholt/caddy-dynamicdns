@@ -104,9 +104,11 @@ func Test_NormalizeProviders(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "no provider",
-			app:     App{Domains: domains1},
-			wantErr: true,
+			name: "no provider",
+			app:  App{Domains: domains1},
+			want: []Provider{
+				{Domains: domains1},
+			},
 		},
 	}
 	for _, tt := range tests {

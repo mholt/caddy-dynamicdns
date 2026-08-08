@@ -18,12 +18,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/caddyserver/caddy/v2/modules/caddytls"
 	"github.com/libdns/libdns"
 	"go.uber.org/zap"
 )
@@ -127,10 +130,35 @@ func (a *App) Provision(ctx caddy.Context) error {
 		return err
 	}
 
+	// only one provider and no DNS provider configured,
+	// try to get global dns provider from TLS app module
+	if len(a.Providers) == 1 && len(a.Providers[0].DNSProviderRaw) == 0 {
+		tlsAppModule, err := a.ctx.App("tls")
+		if err != nil {
+			return fmt.Errorf("failed to get TLS app module: %v", err)
+		}
+		tlsApp, ok := tlsAppModule.(*caddytls.TLS)
+		if !ok {
+			return fmt.Errorf("TLS app is not of type *caddytls.TLS")
+		}
+		dnsField := reflect.ValueOf(tlsApp).Elem().FieldByName("dns")
+		if !dnsField.IsValid() {
+			return fmt.Errorf("incompatible Caddy version: private field 'dns' not found in caddytls.TLS")
+		}
+		dnsInterface := reflect.NewAt(dnsField.Type(), unsafe.Pointer(dnsField.UnsafeAddr())).Elem().Interface()
+		if dnsInterface == nil {
+			return fmt.Errorf("a DNS provider is required")
+		}
+		a.Providers[0].dnsProvider = dnsInterface.(libdns.RecordSetter)
+	}
+
 	// set up the DNS provider modules
 	for i := range a.Providers {
-		if len(a.Providers[i].DNSProviderRaw) == 0 {
+		if len(a.Providers[i].DNSProviderRaw) == 0 && a.Providers[i].dnsProvider == nil {
 			return fmt.Errorf("provider %d: a DNS provider is required", i)
+		}
+		if a.Providers[i].dnsProvider != nil {
+			continue
 		}
 		val, err := ctx.LoadModule(&a.Providers[i], "DNSProviderRaw")
 		if err != nil {
@@ -179,6 +207,8 @@ func (a *App) normalizeProviders() error {
 		// to a sole provider that has no domains of its own
 		if len(a.Providers) == 1 && a.Providers[0].Domains == nil {
 			a.Providers[0].Domains = a.Domains
+		} else if len(a.Providers) == 0 {
+			a.Providers = []Provider{{Domains: a.Domains}}
 		} else {
 			return fmt.Errorf("with multiple providers, domains must be configured per provider")
 		}
