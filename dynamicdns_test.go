@@ -15,10 +15,15 @@
 package dynamicdns
 
 import (
+	"context"
 	"encoding/json"
+	"net/netip"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/libdns/libdns"
+	"go.uber.org/zap"
 )
 
 func Test_NormalizeProviders(t *testing.T) {
@@ -126,4 +131,82 @@ func Test_NormalizeProviders(t *testing.T) {
 			}
 		})
 	}
+}
+
+// recordSetterGetter is a minimal DNS provider that replaces a record set
+// wholesale, the way real providers (e.g. Route 53) do.
+type recordSetterGetter struct {
+	records  []libdns.Record
+	setCalls [][]libdns.Record
+}
+
+func (m *recordSetterGetter) GetRecords(_ context.Context, _ string) ([]libdns.Record, error) {
+	return m.records, nil
+}
+
+func (m *recordSetterGetter) SetRecords(_ context.Context, _ string, recs []libdns.Record) ([]libdns.Record, error) {
+	m.setCalls = append(m.setCalls, recs)
+	m.records = recs
+
+	return recs, nil
+}
+
+// Two same-type IPs must be published as one record set and then left alone:
+// publishing only the IP that differs makes the set flip-flop every check.
+func Test_MultipleIPsOfSameTypeArePublishedTogether(t *testing.T) {
+	lastIPs = nil
+	seededNames = make(map[string]bool)
+
+	ipA := netip.MustParseAddr("203.0.113.10")
+	ipB := netip.MustParseAddr("198.51.100.20")
+
+	// DNS already holds one of the two addresses
+	prov := &recordSetterGetter{records: []libdns.Record{libdns.Address{Name: "www", IP: ipA}}}
+	app := App{
+		Providers: []Provider{{
+			Domains:     map[string][]string{"example.com": {"www"}},
+			dnsProvider: prov,
+		}},
+		ipSources: []IPSource{Static{IPs: []netip.Addr{ipA, ipB}}},
+		logger:    zap.NewNop(),
+	}
+
+	if err := app.checkIPAndUpdateDNS(); err != nil {
+		t.Fatalf("first check: %v", err)
+	}
+	if len(prov.setCalls) != 1 {
+		t.Fatalf("first check: got %d SetRecords calls, want 1", len(prov.setCalls))
+	}
+	got := recordIPs(t, prov.setCalls[0], "www")
+	if diff := cmp.Diff(got, []string{ipB.String(), ipA.String()}, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+		t.Errorf("first check record set diff(-got +want):\n%s", diff)
+	}
+
+	if err := app.checkIPAndUpdateDNS(); err != nil {
+		t.Fatalf("second check: %v", err)
+	}
+	if len(prov.setCalls) != 1 {
+		t.Errorf("second check: got %d SetRecords calls, want no further update", len(prov.setCalls))
+	}
+}
+
+// recordIPs returns the IPs of recs, asserting they are all A records for name.
+func recordIPs(t *testing.T, recs []libdns.Record, name string) []string {
+	t.Helper()
+	ips := make([]string, 0, len(recs))
+	for _, r := range recs {
+		addr, ok := r.(libdns.Address)
+		if !ok {
+			t.Fatalf("got %T, want libdns.Address", r)
+		}
+		if addr.Name != name {
+			t.Errorf("got record name %q, want %q", addr.Name, name)
+		}
+		if recordType(addr.IP) != recordTypeA {
+			t.Errorf("got record type %s for %s, want A", recordType(addr.IP), addr.IP)
+		}
+		ips = append(ips, addr.IP.String())
+	}
+
+	return ips
 }
