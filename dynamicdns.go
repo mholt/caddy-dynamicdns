@@ -299,12 +299,20 @@ func (a App) updateProviderDNS(p *Provider, currentIPs []netip.Addr) {
 	// if we don't know the current IPs of some domains, look them up from DNS
 	a.seedLastIPsFromDNS(p, allDomains)
 
+	// a record set is replaced as a whole, so all the IPs of a type have
+	// to be published together, or a set of two would flip-flop between
+	// them at every check
+	currentIPsByType := make(map[string][]netip.Addr)
+	for _, ip := range currentIPs {
+		currentIPsByType[recordType(ip)] = append(currentIPsByType[recordType(ip)], ip)
+	}
+
 	// do a diff of current and previous IPs to make DNS records to update
 	updatedRecsByZone := make(map[string][]libdns.Address)
-	for _, ip := range currentIPs {
-		for zone, domains := range allDomains {
-			for _, domain := range domains {
-				oldIps, found := lastIPs[libdns.AbsoluteName(domain, zone)][recordType(ip)]
+	for zone, domains := range allDomains {
+		for _, domain := range domains {
+			for recType, ips := range currentIPsByType {
+				oldIps, found := lastIPs[libdns.AbsoluteName(domain, zone)][recType]
 				if !found && a.UpdateOnly {
 					a.logger.Debug("record doesn't exist; skipping update",
 						zap.String("zone", zone),
@@ -313,16 +321,18 @@ func (a App) updateProviderDNS(p *Provider, currentIPs []netip.Addr) {
 					continue
 				}
 
-				if found && ipListContains(oldIps, ip) {
-					// IP is not different and no new domains to manage; no update needed
+				if found && ipListContainsAll(oldIps, ips) {
+					// no IP is missing and no new domains to manage; no update needed
 					continue
 				}
 
-				updatedRecsByZone[zone] = append(updatedRecsByZone[zone], libdns.Address{
-					Name: domain,
-					TTL:  time.Duration(a.TTL),
-					IP:   ip,
-				})
+				for _, ip := range ips {
+					updatedRecsByZone[zone] = append(updatedRecsByZone[zone], libdns.Address{
+						Name: domain,
+						TTL:  time.Duration(a.TTL),
+						IP:   ip,
+					})
+				}
 			}
 		}
 	}
@@ -358,7 +368,7 @@ func (a App) updateProviderDNS(p *Provider, currentIPs []netip.Addr) {
 			if lastIPs[name] == nil {
 				lastIPs[name] = make(map[string][]netip.Addr)
 			}
-			lastIPs[name][recordType(rec.IP)] = []netip.Addr{rec.IP}
+			lastIPs[name][recordType(rec.IP)] = currentIPsByType[recordType(rec.IP)]
 		}
 	}
 
@@ -421,7 +431,7 @@ func (a App) lookupCurrentIPsFromDNS(p *Provider, domains map[string][]string) (
 				return nil, err
 			}
 
-			recMap := make(map[string]map[string]netip.Addr)
+			recMap := make(map[string]map[string][]netip.Addr)
 			for _, r := range recs {
 				ar, ok := r.(libdns.Address)
 				if !ok {
@@ -431,16 +441,16 @@ func (a App) lookupCurrentIPsFromDNS(p *Provider, domains map[string][]string) (
 				a.logger.Debug("found DNS record", zap.String("type", recType), zap.String("name", ar.Name), zap.String("zone", zone), zap.String("value", ar.IP.String()))
 				name := libdns.AbsoluteName(ar.Name, zone)
 				if _, ok := recMap[name]; !ok {
-					recMap[name] = make(map[string]netip.Addr)
+					recMap[name] = make(map[string][]netip.Addr)
 				}
-				recMap[name][recType] = ar.IP
+				recMap[name][recType] = append(recMap[name][recType], ar.IP)
 			}
 			for _, n := range names {
 				name := libdns.AbsoluteName(n, zone)
 				ips := make(map[string][]netip.Addr)
 				for _, t := range []string{recordTypeA, recordTypeAAAA} {
-					if ip, ok := recMap[name][t]; ok {
-						ips[t] = []netip.Addr{ip}
+					if addrs, ok := recMap[name][t]; ok {
+						ips[t] = addrs
 					} else {
 						a.logger.Info("domain not found in DNS", zap.String("domain", name), zap.String("type", t))
 						ips[t] = []netip.Addr{nilIP}
@@ -536,6 +546,16 @@ func removeDuplicateIPs(ips []netip.Addr) []netip.Addr {
 		clean = append(clean, ip)
 	}
 	return clean
+}
+
+// ipListContainsAll returns true if list contains every IP in ips.
+func ipListContainsAll(list, ips []netip.Addr) bool {
+	for _, ip := range ips {
+		if !ipListContains(list, ip) {
+			return false
+		}
+	}
+	return true
 }
 
 // ipListContains returns true if list contains ip; false otherwise.
