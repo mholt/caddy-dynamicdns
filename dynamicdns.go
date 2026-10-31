@@ -558,7 +558,9 @@ type IPRanges struct {
 }
 
 func (r *IPRanges) Contains(ip netip.Addr) bool {
-	if r == nil {
+	// IPRanges is embedded by value in App and IPSettings, so r is never
+	// nil there; "no ranges configured" means both lists are empty.
+	if r == nil || (len(r.Include) == 0 && len(r.Exclude) == 0) {
 		return !ip.IsPrivate() && ip.IsGlobalUnicast()
 	}
 	includeSize := r.Include.largestContainingMaskSize(ip)
