@@ -16,6 +16,7 @@ package dynamicdns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -155,7 +156,22 @@ func (SimpleHTTP) makeClient(network string) *http.Client {
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
+		CheckRedirect: checkRedirect,
 	}
+}
+
+// checkRedirect is net/http's default redirect policy (at most 10
+// redirects), except that it refuses to leave HTTPS: the response body
+// becomes a DNS record, so it must not come over plain HTTP when the
+// endpoint was configured with HTTPS.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing redirect from %s to %s", via[0].URL.Redacted(), req.URL.Redacted())
+	}
+	return nil
 }
 
 func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint string) (netip.Addr, error) {
