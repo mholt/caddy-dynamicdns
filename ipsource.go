@@ -107,6 +107,9 @@ func (sh SimpleHTTP) GetIPs(ctx context.Context, settings IPSettings) ([]netip.A
 		for _, endpoint := range sh.Endpoints {
 			var err error
 			addr, err = sh.lookupIP(ctx, client, endpoint)
+			if err == nil {
+				addr, err = matchFamily(addr, network)
+			}
 			if err != nil {
 				sh.logger.Debug("lookup failed",
 					zap.String("type", name),
@@ -140,6 +143,18 @@ func (sh SimpleHTTP) GetIPs(ctx context.Context, settings IPSettings) ([]netip.A
 	}
 
 	return out, nil
+}
+
+// matchFamily unmaps an IPv4-mapped IPv6 address and checks that addr is
+// of the family that network ("tcp4" or "tcp6") was dialed with. The
+// endpoint writes the address into its response body, so nothing else
+// ties the answer to the IP version it is used for.
+func matchFamily(addr netip.Addr, network string) (netip.Addr, error) {
+	addr = addr.Unmap()
+	if addr.Is4() != (network == "tcp4") {
+		return netip.Addr{}, fmt.Errorf("got %s from a lookup over %s", addr, network)
+	}
+	return addr, nil
 }
 
 // makeClient makes an HTTP client that forces use of the specified network type (e.g. "tcp6").
