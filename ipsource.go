@@ -146,6 +146,7 @@ func (sh SimpleHTTP) GetIPs(ctx context.Context, settings IPSettings) ([]netip.A
 func (SimpleHTTP) makeClient(network string) *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	return &http.Client{
+		Timeout: simpleHTTPTimeout,
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: func(ctx context.Context, _, address string) (net.Conn, error) {
@@ -187,6 +188,12 @@ func (SimpleHTTP) lookupIP(ctx context.Context, client *http.Client, endpoint st
 
 	return addr, nil
 }
+
+// simpleHTTPTimeout limits each request to an endpoint, response body
+// included. The dial and TLS handshake timeouts in makeClient do not cover
+// an endpoint that accepts the request and then stalls, which would
+// otherwise block the checker until Caddy stops or reloads.
+var simpleHTTPTimeout = 30 * time.Second
 
 var defaultHTTPIPServices = []string{
 	"https://icanhazip.com",
