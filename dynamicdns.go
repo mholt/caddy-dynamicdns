@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +72,16 @@ type App struct {
 	// If enabled, the "http" app's config will be scanned to assemble the list
 	// of domains for which to enable dynamic DNS updates.
 	DynamicDomains bool `json:"dynamic_domains,omitempty"`
+
+	// How many IP sources must return the same address before it is used.
+	// By default (0 or 1), the address of the first IP source that returns
+	// one is used. With 2 or more, every IP source is asked, and only the
+	// addresses returned by at least this many of them are used; an IP
+	// version for which no address has enough sources behind it is left
+	// unchanged until the next check. It must not exceed the number of IP
+	// sources. Each ip_source counts once, also when it has several
+	// endpoints.
+	IPSourceQuorum int `json:"ip_source_quorum,omitempty"`
 
 	// The IP versions to enable. By default, both "ipv4" and "ipv6" will be enabled.
 	// To disable IPv6, specify {"ipv6": false}.
@@ -155,6 +166,9 @@ func (a *App) Provision(ctx caddy.Context) error {
 			return err
 		}
 		a.ipSources = []IPSource{sh}
+	}
+	if err := a.checkQuorum(); err != nil {
+		return err
 	}
 
 	// make sure a check interval is set
@@ -256,27 +270,10 @@ func (a App) checkIPAndUpdateDNS() error {
 	lastIPsMu.Lock()
 	defer lastIPsMu.Unlock()
 
-	var err error
-
-	// Lookup current address(es) from first successful IP source
-	var currentIPs []netip.Addr
-	for _, ipSrc := range a.ipSources {
-		ipSettings := IPSettings{a.IPRanges, a.Versions}
-		currentIPs, err = ipSrc.GetIPs(a.ctx, ipSettings)
-		if len(currentIPs) == 0 {
-			err = fmt.Errorf("no IP addresses returned")
-		}
-		if err == nil {
-			break
-		}
-		a.logger.Error("looking up IP address",
-			zap.String("ip_source", ipSrc.(caddy.Module).CaddyModule().ID.Name()),
-			zap.Error(err))
-	}
-
-	// If all IP sources failed, return the error so caller can retry
-	if len(currentIPs) == 0 && err != nil {
-		return fmt.Errorf("all IP sources failed: %w", err)
+	currentIPs, err := a.lookupPublicIPs()
+	if err != nil {
+		// returned so the caller can retry
+		return err
 	}
 
 	// make sure the source returns tidy info; duplicates are wasteful
@@ -287,6 +284,110 @@ func (a App) checkIPAndUpdateDNS() error {
 		a.updateProviderDNS(&a.Providers[i], currentIPs)
 	}
 
+	return nil
+}
+
+// lookupPublicIPs returns the current public IP addresses: from the first
+// IP source that returns any, or, with an IPSourceQuorum of 2 or more, the
+// addresses that at least that many IP sources returned.
+func (a App) lookupPublicIPs() ([]netip.Addr, error) {
+	ipSettings := IPSettings{a.IPRanges, a.Versions}
+
+	if a.IPSourceQuorum <= 1 {
+		// the first IP source that returns an address, as before
+		var err error
+		var currentIPs []netip.Addr
+		for _, ipSrc := range a.ipSources {
+			currentIPs, err = ipSrc.GetIPs(a.ctx, ipSettings)
+			if len(currentIPs) == 0 {
+				err = fmt.Errorf("no IP addresses returned")
+			}
+			if err == nil {
+				break
+			}
+			a.logger.Error("looking up IP address",
+				zap.String("ip_source", ipSrc.(caddy.Module).CaddyModule().ID.Name()),
+				zap.Error(err))
+		}
+		if len(currentIPs) == 0 && err != nil {
+			return nil, fmt.Errorf("all IP sources failed: %w", err)
+		}
+		return currentIPs, nil
+	}
+
+	// ask every source; each one counts once per address
+	votes := make(map[netip.Addr]int)
+	answered := 0
+	for _, ipSrc := range a.ipSources {
+		ips, err := ipSrc.GetIPs(a.ctx, ipSettings)
+		if len(ips) == 0 && err == nil {
+			err = fmt.Errorf("no IP addresses returned")
+		}
+		if err != nil {
+			a.logger.Error("looking up IP address",
+				zap.String("ip_source", ipSrc.(caddy.Module).CaddyModule().ID.Name()),
+				zap.Error(err))
+			continue
+		}
+		answered++
+		// unmapped, so an IPv4-mapped IPv6 address counts as its IPv4 address
+		seen := make(map[netip.Addr]bool)
+		for _, ip := range ips {
+			ip = ip.Unmap()
+			if !seen[ip] {
+				seen[ip] = true
+				votes[ip]++
+			}
+		}
+	}
+
+	var agreed []netip.Addr
+	for ip, n := range votes {
+		if n >= a.IPSourceQuorum {
+			agreed = append(agreed, ip)
+		}
+	}
+	slices.SortFunc(agreed, func(x, y netip.Addr) int { return x.Compare(y) })
+
+	// an IP version that was seen but has no agreed address stays as it is
+	for _, family := range []string{recordTypeA, recordTypeAAAA} {
+		seen, ok := false, false
+		var counts []string
+		for ip, n := range votes {
+			if recordType(ip) == family {
+				seen = true
+				counts = append(counts, fmt.Sprintf("%s=%d", ip, n))
+			}
+		}
+		for _, ip := range agreed {
+			ok = ok || recordType(ip) == family
+		}
+		if seen && !ok {
+			slices.Sort(counts)
+			a.logger.Warn("IP sources do not agree; leaving these records unchanged until the next check",
+				zap.String("type", family),
+				zap.Int("quorum", a.IPSourceQuorum),
+				zap.Int("sources", len(a.ipSources)),
+				zap.Int("answered", answered),
+				zap.Strings("votes", counts))
+		}
+	}
+
+	if len(agreed) == 0 {
+		return nil, fmt.Errorf("no address returned by at least %d of %d IP sources (%d answered)",
+			a.IPSourceQuorum, len(a.ipSources), answered)
+	}
+	return agreed, nil
+}
+
+// checkQuorum validates IPSourceQuorum against the IP sources.
+func (a App) checkQuorum() error {
+	if a.IPSourceQuorum < 0 {
+		return fmt.Errorf("ip_source_quorum must not be negative")
+	}
+	if a.IPSourceQuorum > len(a.ipSources) {
+		return fmt.Errorf("ip_source_quorum %d is more than the %d IP source(s)", a.IPSourceQuorum, len(a.ipSources))
+	}
 	return nil
 }
 

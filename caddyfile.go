@@ -16,6 +16,7 @@ package dynamicdns
 
 import (
 	"net/netip"
+	"strconv"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
@@ -42,6 +43,7 @@ func init() {
 //			}
 //		}
 //		ip_source upnp|simple_http <endpoint>
+//		ip_source_quorum <n>
 //		include <CIDRs ...>
 //		exclude <CIDRs ...>
 //		update_only
@@ -128,6 +130,19 @@ func parseApp(d *caddyfile.Dispenser, _ any) (any, error) {
 				return nil, err
 			}
 			app.IPSourcesRaw = append(app.IPSourcesRaw, caddyconfig.JSONModuleObject(unm, "source", sourceType, nil))
+
+		case "ip_source_quorum":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			n, err := strconv.Atoi(d.Val())
+			if err != nil || n < 1 {
+				return nil, d.Errf("ip_source_quorum must be a whole number of at least 1, got '%s'", d.Val())
+			}
+			if d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			app.IPSourceQuorum = n
 
 		case "versions":
 			args := d.RemainingArgs()
